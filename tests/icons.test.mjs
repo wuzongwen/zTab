@@ -121,14 +121,279 @@ test('pointer lifecycle cancels safely and overlays retain accessible exit anima
   assert.match(dragSource, /document.removeEventListener\('pointermove', move\)/);
   assert.match(dragSource, /document.addEventListener\('click', suppressClick, true\)/);
   assert.match(dragSource, /hit\[0\]\?\.closest<HTMLElement>\('\[data-link-destination\]'\)/);
-  assert.match(dragSource, /current.x = pointer.clientX\s+current.y = pointer.clientY\s+update\(\)\s+armClickGuard\(\)/);
+  assert.match(dragSource, /current.x = pointer.clientX\s+current.y = pointer.clientY\s+update\('release'\)\s+armClickGuard\(\)/);
   assert.match(overlay, /!element.parentElement\?\.inert/);
   assert.match(overlay, /hidden=\{!present\} inert=\{!open\}/);
   assert.match(overlay, /setPresent\(false\), 300/);
   assert.match(overlay, /prefers-reduced-motion/);
-  assert.match(overlay, /scrollbarGutter = 'stable'/);
+  assert.doesNotMatch(overlay, /scrollbarGutter\s*=/);
   assert.match(overlay, /if \(open && present && !panel.current\?\.contains\(document.activeElement\)\)/);
 });
+test('overlay scroll locks preserve the root gutter and release only after the final exiting layer', async () => {
+  const source = await readFile(new URL('../src/components/AnimatedOverlay.tsx', import.meta.url), 'utf8');
+  const callbacks = new Map(), instances = [];
+  let current, now = 0, sequence = 0, gutter = 'auto', gutterWrites = 0;
+  const listeners = new Map();
+  const document = {
+    body: { style: { overflow: 'clip' } }, documentElement: { style: {} }, activeElement: null,
+    querySelector: () => null,
+    addEventListener(name, handler) { if (!listeners.has(name)) listeners.set(name, new Set()); listeners.get(name).add(handler); },
+    removeEventListener(name, handler) { listeners.get(name)?.delete(handler); },
+  };
+  Object.defineProperty(document.documentElement.style, 'scrollbarGutter', { get: () => gutter, set: value => { gutter = value; gutterWrites++; } });
+  const window = { matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }), setTimeout(callback, delay) { const id = ++sequence; callbacks.set(id, { callback, at: now + delay }); return id; } };
+  const effect = (callback, deps) => {
+    const i = current.effectIndex++;
+    if (!current.effects[i] || deps.some((value, index) => value !== current.effects[i].deps[index])) {
+      const instance = current;
+      instance.pending.push(() => { instance.effects[i]?.cleanup?.(); instance.effects[i] = { deps, cleanup: callback() }; });
+    }
+  };
+  const React = { createElement: (type, props, ...children) => ({ type, props: props ?? {}, children }) };
+  const mod = { exports: {} };
+  vm.runInNewContext(ts.transpileModule(source.replace(/^import .*$/gm, ''), { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.React } }).outputText, {
+    exports: mod.exports, React, X: 'X', document, window, createPortal: tree => tree, dismissSelectOnEscape: () => false,
+    useState(value) { const instance = current, i = instance.stateIndex++; if (!(i in instance.states)) instance.states[i] = value; return [instance.states[i], value => { if (instance.states[i] !== value) { instance.states[i] = value; instance.dirty = true; } }]; },
+    useRef(value) { const i = current.refIndex++; return current.refs[i] ??= { current: i === 0 ? current.element : value }; },
+    useEffect: effect, useLayoutEffect: effect,
+    requestAnimationFrame: () => ++sequence, cancelAnimationFrame() {}, clearTimeout: id => callbacks.delete(id),
+  });
+  function render(instance, open = instance.open) {
+    instance.open = open; instance.element.parentElement.inert = !open;
+    do {
+      current = instance; instance.stateIndex = instance.refIndex = instance.effectIndex = 0; instance.dirty = false;
+      mod.exports.AnimatedOverlay({ open, onClose() {}, label: '测试', children: null });
+      instance.pending.splice(0).forEach(run => run());
+    } while (instance.dirty);
+  }
+  const create = () => {
+    const instance = { states: [], refs: [], effects: [], pending: [], open: true, element: { isConnected: true, parentElement: { inert: false }, contains: () => true, focus() {}, querySelectorAll: () => [] } };
+    instances.push(instance); render(instance); return instance;
+  };
+  const advance = ms => { now += ms; for (const [id, timer] of [...callbacks]) if (timer.at <= now) { callbacks.delete(id); timer.callback(); } instances.forEach(instance => { if (instance.dirty) render(instance); }); };
+  const first = create(), second = create();
+  assert.equal(document.body.style.overflow, 'hidden');
+  assert.equal(gutter, 'auto'); assert.equal(gutterWrites, 0);
+  render(first, false); advance(299);
+  assert.equal(document.body.style.overflow, 'hidden');
+  advance(1); assert.equal(document.body.style.overflow, 'hidden');
+  render(second, false); advance(150); render(second, true); advance(200);
+  assert.equal(document.body.style.overflow, 'hidden');
+  second.effects.forEach(effect => effect.cleanup?.());
+  assert.equal(document.body.style.overflow, 'clip');
+  assert.equal(gutterWrites, 0);
+  assert.ok([...listeners.values()].every(handlers => handlers.size === 0));
+});
+
+function pointerHarness({ touch = false, canGroup = true, save = async () => {}, layoutEffects = false } = {}) {
+  let now = 0, nextId = 0, hits;
+  const frames = new Map(), timers = new Map(), refs = [], states = [], effects = [], layouts = [], pendingLayouts = [], animationLog = [];
+  let refIndex, stateIndex, effectIndex, layoutIndex, options, controller;
+  const target = () => {
+    const handlers = new Map();
+    return {
+      handlers,
+      addEventListener(name, handler) { if (!handlers.has(name)) handlers.set(name, new Set()); handlers.get(name).add(handler); },
+      removeEventListener(name, handler) { handlers.get(name)?.delete(handler); },
+      async dispatch(name, event = {}) { await Promise.all([...(handlers.get(name) ?? [])].map(handler => handler(event))); },
+    };
+  };
+  const classes = () => {
+    const values = new Set();
+    return { add: (...names) => names.forEach(name => values.add(name)), remove: (...names) => names.forEach(name => values.delete(name)), contains: name => values.has(name) };
+  };
+  const style = () => ({ setProperty() {} });
+  const rect = (left, top = 100, width = 60, height = 60) => ({ left, top, right: left + width, bottom: top + height, width, height });
+  const scroll = { scrollTop: 0, getBoundingClientRect: () => rect(0, 0, 600, 600) };
+  const nodes = [];
+  const root = {
+    dataset: { dragScope: 'desktop-daily' },
+    querySelectorAll: () => nodes,
+    contains: node => node === root || nodes.includes(node),
+    closest: selector => selector === '.animated-overlay-panel, .desktop' ? scroll : null,
+  };
+  const clone = () => ({ classList: classes(), style: style(), querySelectorAll: () => [], removeAttribute() {}, setAttribute() {}, remove() { this.removed = true; } });
+  for (const [id, left] of [['link:a', 50], ['link:b', 150], ['link:c', 250], ['folder:f', 350], ['widget:memo', 450]]) {
+    const node = {
+      dataset: { sortId: id, ...(id === 'folder:f' ? { linkDestination: 'f' } : {}) },
+      rect: rect(left), classList: classes(), style: style(),
+      getBoundingClientRect() { return { ...this.rect }; },
+      querySelector: selector => selector === '.site-icon' && id.startsWith('link:') ? { getBoundingClientRect: () => node.getBoundingClientRect() } : null,
+      closest(selector) { return selector === '[data-drag-scope]' ? root : selector === '[data-link-destination]' && id === 'folder:f' ? node : null; },
+      cloneNode: clone,
+      animate(keyframes) { const animation = { playState: layoutEffects ? 'running' : 'finished', cancel() { this.playState = 'idle'; } }; animationLog.push({ id, keyframes, animation }); return animation; },
+    };
+    nodes.push(node);
+  }
+  const document = { ...target(), querySelectorAll: () => [root], body: { classList: classes(), append() {} }, elementsFromPoint: (x, y) => hits ?? [nodes.find(node => x >= node.rect.left && x <= node.rect.right && y >= node.rect.top && y <= node.rect.bottom) ?? root] };
+  const window = { ...target(), scrollY: 0, matchMedia: () => ({ matches: false }), scrollBy(_x, y) { window.scrollY += y; }, setTimeout(callback, delay) { const id = ++nextId; timers.set(id, { callback, at: now + delay }); return id; } };
+  const mod = { exports: {} };
+  const hooks = {
+    useRef(value) { const i = refIndex++; return refs[i] ??= { current: value }; },
+    useState(value) { const i = stateIndex++; if (!(i in states)) states[i] = value; return [states[i], value => { states[i] = value; }]; },
+    useEffect(callback, deps) { const i = effectIndex++; if (!effects[i] || deps.some((value, j) => value !== effects[i].deps[j])) { effects[i]?.cleanup?.(); effects[i] = { deps, cleanup: callback() }; } },
+    useLayoutEffect(callback, deps) {
+      const i = layoutIndex++;
+      if (layoutEffects && (!layouts[i] || deps.some((value, j) => value !== layouts[i].deps[j]))) {
+        layouts[i] = { deps };
+        pendingLayouts.push(callback);
+      }
+    },
+  };
+  vm.runInNewContext(ts.transpileModule(dragSource, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText, {
+    exports: mod.exports, require: () => hooks, document, window, innerHeight: 600,
+    performance: { now: () => now }, getComputedStyle: () => ({ getPropertyValue: () => '60px' }),
+    requestAnimationFrame(callback) { const id = ++nextId; frames.set(id, callback); return id; }, cancelAnimationFrame: id => frames.delete(id),
+    clearTimeout: id => timers.delete(id),
+  });
+  const grouped = [], committed = [];
+  options = {
+    items: nodes.map(node => ({ id: node.dataset.sortId })), scope: 'desktop-daily', allowFolders: true, canDrop: id => id.startsWith('link:'),
+    canGroup: canGroup ? (source, dest) => source.startsWith('link:') && dest.startsWith('link:') : undefined,
+    onGroup: async (...args) => { grouped.push(args); await save(); },
+    onCommit: async (...args) => { committed.push(args); await save(); },
+  };
+  function render(patch = {}) { options = { ...options, ...patch }; refIndex = stateIndex = effectIndex = layoutIndex = 0; controller = mod.exports.useTileDrag(options); pendingLayouts.splice(0).forEach(effect => effect()); return controller; }
+  render();
+  const pointer = (x, y = 130, pointerId = 1) => ({ clientX: x, clientY: y, pointerId, preventDefault() {} });
+  return {
+    nodes, root, scroll, document, window, frames, grouped, committed, render, animationLog,
+    down(id = 'link:a') { const node = nodes.find(node => node.dataset.sortId === id); controller.onPointerDown({ ...pointer(node.rect.left + 30), target: node, currentTarget: node, button: 0, isPrimary: true, pointerType: touch ? 'touch' : 'mouse' }, id); },
+    move: (x, y = 130, id = 1) => document.dispatch('pointermove', pointer(x, y, id)),
+    up: (x, y = 130, id = 1) => document.dispatch('pointerup', pointer(x, y, id)),
+    hit: value => { hits = value; },
+    async advance(ms) { now += ms; for (const [id, timer] of [...timers]) if (timer.at <= now) { timers.delete(id); timer.callback(); } const callbacks = [...frames]; frames.clear(); callbacks.forEach(([, callback]) => callback()); },
+    cleanup() { effects.forEach(effect => effect.cleanup?.()); },
+  };
+}
+
+test('clicking a folder before its dissolution leaves no stale FLIP snapshot for the next grouping drag', async () => {
+  const h = pointerHarness({ layoutEffects: true });
+  for (let round = 0; round < 2; round++) {
+    h.down('folder:f'); await h.up(380); h.render();
+    h.nodes[1].rect = { ...h.nodes[1].rect, left: h.nodes[1].rect.left + 90, right: h.nodes[1].rect.right + 90 };
+    h.render();
+    h.down(); await h.move(h.nodes[1].rect.left + 30); h.render();
+    assert.equal(h.animationLog.length, 0, '未激活的点击不能触发删除前坐标的排序动画');
+    await h.advance(450); await h.up(h.nodes[1].rect.left + 30); h.render();
+    assert.equal(h.grouped.length, round + 1);
+  }
+  h.cleanup();
+});
+
+test('active sorting still measures positions and animates changed tile locations', async () => {
+  const h = pointerHarness({ layoutEffects: true });
+  h.down(); await h.move(152); await h.advance(120);
+  h.nodes[1].rect = { ...h.nodes[1].rect, left: 50, right: 110 };
+  h.render();
+  assert.ok(h.animationLog.some(entry => entry.id === 'link:b' && entry.keyframes[0].transform === 'translate(100px, 0px)'));
+  await h.document.dispatch('pointercancel'); h.render(); h.cleanup();
+});
+
+test('pointer grouping requires a stable center dwell and does not also commit sorting', async () => {
+  const h = pointerHarness(); h.down(); await h.move(180);
+  assert.ok(h.nodes[1].classList.contains('tile-group-candidate'));
+  await h.advance(449);
+  assert.equal(h.nodes[1].classList.contains('tile-group-ready'), false);
+  await h.advance(1);
+  assert.ok(h.nodes[1].classList.contains('tile-group-ready'));
+  await h.up(180);
+  assert.equal(h.grouped.length, 1);
+  assert.deepEqual(h.grouped[0].slice(0, 2), ['link:a', 'link:b']);
+  assert.equal(h.committed.length, 0);
+  assert.equal(h.nodes[1].classList.contains('tile-group-candidate'), false);
+  assert.equal(h.document.body.classList.contains('tiles-dragging'), false);
+  h.cleanup();
+});
+
+test('quick center drops, edge drags and non-link sources remain ordinary sorting', async () => {
+  for (const [source, x, delay] of [['link:a', 180, 449], ['link:a', 152, 600], ['widget:memo', 180, 600], ['folder:f', 180, 600]]) {
+    const h = pointerHarness(); h.down(source); await h.move(x); await h.advance(delay); await h.up(x);
+    assert.equal(h.grouped.length, 0);
+    assert.equal(h.committed.length, 1);
+    assert.equal(h.committed[0][0][1].id, source);
+    h.cleanup();
+  }
+  const disabled = pointerHarness({ canGroup: false }); disabled.down(); await disabled.move(180); await disabled.advance(600); await disabled.up(180);
+  assert.equal(disabled.grouped.length, 0); assert.equal(disabled.committed.length, 1); disabled.cleanup();
+});
+
+test('moving through an icon edge into its center does not move the target out from under the pointer', async () => {
+  const h = pointerHarness(); h.down(); await h.move(152); await h.advance(60);
+  assert.equal(h.render().items[0].id, 'link:a');
+  await h.move(180); await h.advance(450); await h.up(180);
+  assert.equal(h.grouped.length, 1); assert.equal(h.committed.length, 0); h.cleanup();
+});
+
+test('desktop grouping publishes a single atomic save and leaves state untouched on failure', async () => {
+  const start = app.indexOf('onGroup: async (source, target, items) => {');
+  const callback = app.slice(start + 'onGroup: '.length, app.indexOf('}, onStart:', start) + 1);
+  for (const success of [false, true]) {
+    const initial = model.reconcileLayouts(model.defaults());
+    const original = JSON.stringify(initial);
+    const saves = [], notices = [];
+    const context = { groupLinksIntoFolder: model.groupLinksIntoFolder, stateRef: { current: initial }, uid: () => 'grouped', tell: value => notices.push(value), commit: async next => { model.validateState(next); saves.push(next); if (success) context.stateRef.current = next; return success; } };
+    vm.runInNewContext(ts.transpileModule(`const group = ${callback}; globalThis.group = group;`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText, context);
+    await context.group('link:site-0', 'link:site-1', initial.layouts.daily.order.map(id => ({ id })));
+    assert.equal(saves.length, 1);
+    assert.equal(JSON.stringify(initial), original);
+    assert.equal(context.stateRef.current === initial, !success);
+    assert.equal(notices.length, success ? 1 : 0);
+  }
+});
+
+test('group dwell resets after moving, leaving, switching targets or scrolling', async () => {
+  for (const mode of ['move', 'leave', 'switch', 'scroll', 'layout']) {
+    const h = pointerHarness(); h.down(); await h.move(180); await h.advance(400);
+    let x = 180;
+    if (mode === 'move') { x = 186; await h.move(x); }
+    if (mode === 'leave') { await h.move(120); await h.move(180); }
+    if (mode === 'switch') { x = 280; await h.move(x); }
+    if (mode === 'scroll') { h.scroll.scrollTop = 10; await h.advance(16); await h.move(x); }
+    if (mode === 'layout') { h.nodes[1].rect = { ...h.nodes[1].rect, left: h.nodes[1].rect.left + 5, right: h.nodes[1].rect.right + 5 }; await h.advance(16); await h.move(x); }
+    await h.advance(100); await h.up(x);
+    assert.equal(h.grouped.length, 0, mode); h.cleanup();
+  }
+});
+
+test('existing folders take priority and cancelled or invalid drops never create a folder', async () => {
+  const folder = pointerHarness(); folder.down(); await folder.move(180); await folder.advance(500); await folder.move(380); await folder.up(380);
+  assert.equal(folder.grouped.length, 0); assert.equal(folder.committed[0][1], 'f'); folder.cleanup();
+  for (const mode of ['escape', 'cancel', 'blur', 'disabled', 'scope', 'outside', 'unmount']) {
+    const h = pointerHarness(); h.down(); await h.move(180); await h.advance(500);
+    if (mode === 'escape') await h.document.dispatch('keydown', { key: 'Escape', preventDefault() {}, stopImmediatePropagation() {} });
+    if (mode === 'cancel') await h.document.dispatch('pointercancel');
+    if (mode === 'blur') await h.window.dispatch('blur');
+    if (mode === 'disabled') h.render({ disabled: true });
+    if (mode === 'scope') h.render({ scope: 'desktop-other' });
+    if (mode === 'outside') h.hit([{ closest: () => null }]);
+    if (mode === 'unmount') h.cleanup();
+    await h.up(180);
+    assert.equal(h.grouped.length, 0, mode); assert.equal(h.committed.length, 0, mode);
+    assert.equal(h.nodes[1].classList.contains('tile-group-ready'), false, mode); h.cleanup();
+  }
+});
+
+test('touch grouping retains long press activation and saving suppresses duplicate pointer-up', async () => {
+  const early = pointerHarness({ touch: true }); early.down(); await early.move(180); await early.advance(600); await early.up(180);
+  assert.equal(early.grouped.length, 0); assert.equal(early.committed.length, 0); early.cleanup();
+  let finish;
+  const h = pointerHarness({ touch: true, save: () => new Promise(resolve => { finish = resolve; }) });
+  h.down(); await h.advance(280); await h.move(180); await h.advance(450);
+  const pending = h.up(180); await h.up(180);
+  assert.equal(h.grouped.length, 1); finish(false); await pending;
+  assert.equal(h.render().dragging, undefined); assert.equal(h.frames.size, 0); h.cleanup();
+});
+
+test('stationary frame hits never arm grouping and release revalidates the target', async () => {
+  const h = pointerHarness(); h.down(); await h.move(120);
+  h.nodes[1].rect = { ...h.nodes[1].rect, left: 90, right: 150 };
+  await h.advance(600); await h.up(120);
+  assert.equal(h.grouped.length, 0); h.cleanup();
+  const stale = pointerHarness(); stale.down(); await stale.move(180); await stale.advance(500); await stale.up(280);
+  assert.equal(stale.grouped.length, 0); stale.cleanup();
+});
+
 test('nested editors and menus escape the desktop stacking context', () => {
   assert.match(app, /siteMenu && createPortal\(/);
   assert.match(app, /modal && createPortal\(/);

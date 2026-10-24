@@ -12,10 +12,31 @@ const code = ts.transpileModule(source, {
     module: ts.ModuleKind.ES2022,
   },
 }).outputText;
-const { defaults, validateState, safeUrl, parseBackup, imageValid, reconcileLayouts, mergeVisibleOrder, defaultWidgetSeed } =
+const { defaults, validateState, safeUrl, parseBackup, imageValid, reconcileLayouts, mergeVisibleOrder, groupLinksIntoFolder, defaultWidgetSeed } =
   await import(
     `data:text/javascript;base64,${Buffer.from(code).toString("base64")}`
   );
+test('theme preferences and accent survive validation and backup without resolving system', () => {
+  for (const theme of ['light', 'dark', 'system']) {
+    const state = defaults();
+    state.settings.theme = theme; state.settings.accent = '#e4bd32';
+    const restored = parseBackup(JSON.stringify({format:'ztab',version:1,data:state,widgets:null})).data;
+    assert.equal(restored.settings.theme, theme);
+    assert.equal(restored.settings.accent, '#e4bd32');
+  }
+});
+test('single theme source resolves explicit preference and cleans up system listener', async () => {
+  const source = await readFile(new URL('../src/theme.ts', import.meta.url), 'utf8');
+  const compiled = ts.transpileModule(source.replace(/import .* from .*;\n/g, ''), {compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ES2022}}).outputText;
+  const { resolveTheme } = await import(`data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`);
+  for (const dark of [true,false]) {
+    assert.equal(resolveTheme('light',dark),'light'); assert.equal(resolveTheme('dark',dark),'dark');
+    assert.equal(resolveTheme('system',dark),dark ? 'dark' : 'light');
+  }
+  assert.match(source, /removeEventListener\('change', onChange\)/);
+  assert.match(source, /root\.dataset\.theme = resolved/);
+  assert.doesNotMatch(source, /localStorage|saveState/);
+});
 test('category symbols preserve legacy and bounded lucide IDs through backups', () => {
   for (const symbol of ['⌂', '😀', 'abcde', 'lucide:house', 'lucide:unknown-future-icon', `lucide:${'a'.repeat(64)}`]) {
     const state = defaults(); state.categories[0].symbol = symbol;
@@ -38,6 +59,51 @@ test('tile sizes validate strictly, survive backups and reconcile stale referenc
   const hidden = reconcileLayouts({...s,layouts:{...s.layouts,daily:{...s.layouts.daily,hidden:['widget:memo']}}});
   assert.deepEqual(hidden.layouts.daily.sizes, s.layouts.daily.sizes);
 });
+test('grouping desktop links is atomic and replaces the target slot without disturbing other layouts', () => {
+  for (const [source, target] of [['site-0', 'site-2'], ['site-2', 'site-0']]) {
+    const state = reconcileLayouts(defaults());
+    state.layouts.daily.hidden = ['widget:memo'];
+    state.layouts.daily.sizes = { 'link:site-0': '2x1', 'link:site-2': '2x2', 'widget:memo': '1x1', 'link:site-3': '4x2' };
+    const original = JSON.stringify(state);
+    const visible = state.layouts.daily.order.filter(key => !state.layouts.daily.hidden.includes(key));
+    const reordered = [...visible];
+    const item = reordered.splice(reordered.indexOf('link:site-4'), 1)[0];
+    reordered.splice(reordered.indexOf(`link:${target}`), 0, item);
+    const expected = mergeVisibleOrder(state.layouts.daily.order, reordered).filter(key => key !== `link:${source}`).map(key => key === `link:${target}` ? 'folder:grouped' : key);
+    const result = groupLinksIntoFolder(state, source, target, 'grouped', reordered);
+    assert.equal(JSON.stringify(state), original);
+    assert.deepEqual(result.layouts.daily.order, expected);
+    assert.deepEqual(result.layouts.daily.hidden, ['widget:memo']);
+    assert.deepEqual(result.layouts.daily.sizes, { 'widget:memo': '1x1', 'link:site-3': '4x2' });
+    assert.equal(result.layouts.work, state.layouts.work);
+    assert.equal(result.links.find(link => link.id === source).folder, 'grouped');
+    assert.equal(result.links.find(link => link.id === target).folder, 'grouped');
+    assert.equal(result.links.find(link => link.id === 'site-3'), state.links.find(link => link.id === 'site-3'));
+    assert.deepEqual(result.folders.at(-1), { id: 'grouped', name: '新建文件夹', category: 'daily' });
+    const restored = parseBackup(JSON.stringify({ format: 'ztab', version: 1, data: result, widgets: null })).data;
+    assert.deepEqual(restored.layouts, result.layouts);
+    assert.deepEqual(restored.links.filter(link => link.folder === 'grouped').map(link => link.id).sort(), [source, target].sort());
+  }
+});
+
+test('grouping rejects invalid or stale desktop links and folder limits without changing data', () => {
+  for (const mode of ['same', 'missing', 'nested', 'category', 'duplicate-folder', 'stale', 'duplicate-order', 'limit']) {
+    const state = reconcileLayouts(defaults());
+    let source = 'site-0', target = 'site-1', folder = 'grouped';
+    if (mode === 'same') target = source;
+    if (mode === 'missing') source = 'missing';
+    if (mode === 'nested') state.links[0].folder = 'tools';
+    if (mode === 'category') state.links[1].category = 'work';
+    if (mode === 'duplicate-folder') folder = 'tools';
+    if (mode === 'limit') state.folders = Array.from({ length: 100 }, (_, i) => ({ id: `folder-${i}`, name: '文件夹', category: 'daily' }));
+    const order = state.layouts.daily.order.filter(key => mode !== 'stale' || key !== 'link:site-0');
+    if (mode === 'duplicate-order') order.push(order[0]);
+    const original = JSON.stringify(state);
+    assert.throws(() => groupLinksIntoFolder(state, source, target, folder, order));
+    assert.equal(JSON.stringify(state), original);
+  }
+});
+
 test('legacy settings migrate independently and invalid new values are rejected', () => {
   const s = defaults();
   s.settings = {engine:'bing',columns:8,size:58,wallpaper:'aurora',dim:12,greeting:'test',newTab:false,showWidgets:true};
@@ -58,17 +124,32 @@ test('category transitions validate, migrate and survive backup roundtrip', () =
   assert.equal(validateState(legacy).settings.categoryTransition, 'fade');
   assert.equal(parseBackup(JSON.stringify({ format: 'ztab', version: 1, data: legacy, widgets: null })).data.settings.categoryTransition, 'fade');
   assert.equal(Object.hasOwn(legacy.settings, 'categoryTransition'), false);
-  for (const categoryTransition of ['none', 'fade', 'slide']) {
+  for (const categoryTransition of ['none', 'fade', 'slide', 'slide-horizontal', 'zoom', 'blur']) {
     const s = defaults();
     s.settings.categoryTransition = categoryTransition;
     assert.equal(validateState(s).settings.categoryTransition, categoryTransition);
     assert.equal(parseBackup(JSON.stringify({ format: 'ztab', version: 1, data: s, widgets: null })).data.settings.categoryTransition, categoryTransition);
   }
-  for (const categoryTransition of ['zoom', '', null, false, 1, [], {}]) {
+  for (const categoryTransition of ['unknown', '', null, false, 1, [], {}]) {
     const s = defaults();
     s.settings.categoryTransition = categoryTransition;
     assert.throws(() => validateState(s));
     assert.throws(() => parseBackup(JSON.stringify({ format: 'ztab', version: 1, data: s, widgets: null })));
+  }
+});
+test('transition duration migrates, validates boundaries and survives backup', () => {
+  const legacy = defaults(); delete legacy.settings.categoryTransitionDuration;
+  assert.equal(validateState(legacy).settings.categoryTransitionDuration, 200);
+  assert.equal(Object.hasOwn(legacy.settings, 'categoryTransitionDuration'), false);
+  for (const value of [100, 200, 1000]) {
+    const s = defaults(); s.settings.categoryTransitionDuration = value;
+    assert.equal(validateState(s).settings.categoryTransitionDuration, value);
+    assert.equal(parseBackup(JSON.stringify({format:'ztab',version:1,data:s,widgets:null})).data.settings.categoryTransitionDuration, value);
+  }
+  for (const value of [99,1001,NaN,Infinity,-Infinity,'200',null,false,[],{}]) {
+    const s = defaults(); s.settings.categoryTransitionDuration = value;
+    assert.throws(() => validateState(s));
+    assert.throws(() => parseBackup(JSON.stringify({format:'ztab',version:1,data:s,widgets:null})));
   }
 });
 test('icon columns accept 4 through 20 and survive backup roundtrip', () => {

@@ -1,0 +1,24 @@
+.appreciation-trigger[aria-expanded=true] { background: #ffffff30; }
+.appreciation-trigger[aria-expanded=true] svg { fill: #ffffff24; }
+.appreciation-popover {
+  position: fixed;
+  z-index: 14;
+  display: grid;
+  grid-auto-rows: max-content;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  gap: 8px;
+  width: 306px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--panel-bg);
+  color: var(--text);
+  box-shadow: var(--shadow);
+}
+.appreciation-heading { display: flex; align-items: center; justify-content: space-between; min-width: 0; height: 26px; font-size: 14px; }
+.appreciation-heading strong { font-weight: 600; }
+.appreciation-heading button { display: grid; place-items: center; width: 26px; height: 26px; padding: 0; border-radius: 7px; color: var(--muted); }
+.appreciation-heading button:hover { background: var(--hover); }
+.appreciation-popover img { display: block; width: 100%; height: auto; border-radius: 8px; }
+.appreciation-popover p { margin: 0; color: var(--muted); text-align: center; font-size: 12px; line-height: 18px; }

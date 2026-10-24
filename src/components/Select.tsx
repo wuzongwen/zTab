@@ -5,9 +5,9 @@ import { registerSelectLayer } from './selectLayers'
 import './select.css'
 
 export type SelectOption = { value: string; label: string }
-export function Select({ value, options, onValueChange, disabled = false, label, theme = 'system', compact, display }: {
+export function Select({ value, options, onValueChange, disabled = false, label, compact, display, onOpenChange }: {
   value: string; options: SelectOption[]; onValueChange: (value: string) => void;
-  disabled?: boolean; label: string; theme?: string; compact?: boolean; display?: ReactNode;
+  disabled?: boolean; label: string; theme?: string; compact?: boolean; display?: ReactNode; onOpenChange?: (open: boolean) => void;
 }) {
   const id = useId()
   const trigger = useRef<HTMLButtonElement>(null)
@@ -18,6 +18,9 @@ export function Select({ value, options, onValueChange, disabled = false, label,
   const typed = useRef({ text: '', time: 0 })
   const selected = options.findIndex(option => option.value === value)
   const visible = open && !disabled && options.length > 0
+  const openCallback = useRef(onOpenChange)
+  openCallback.current = onOpenChange
+  useLayoutEffect(() => { openCallback.current?.(visible) }, [visible])
   const close = () => setOpen(false)
   const choose = (index: number) => {
     const option = options[index]
@@ -51,7 +54,7 @@ export function Select({ value, options, onValueChange, disabled = false, label,
   }, [visible, compact, options.length])
   useLayoutEffect(() => { if (visible) document.getElementById(`${id}-${active}`)?.scrollIntoView({ block: 'nearest' }) }, [active, visible, id])
   useLayoutEffect(() => { if (disabled) close() }, [disabled])
-  return <><button ref={trigger} type="button" role="combobox" className={`ztab-select ${compact ? 'ztab-select-compact' : ''}`} data-theme={theme}
+  return <><button ref={trigger} type="button" role="combobox" className={`ztab-select ${compact ? 'ztab-select-compact' : ''}`}
     aria-label={label} aria-haspopup="listbox" aria-expanded={visible} aria-controls={visible ? id : undefined} aria-activedescendant={visible ? `${id}-${active}` : undefined}
     disabled={disabled || !options.length} onBlur={close}
     onClick={() => { setActive(Math.max(0, selected)); setOpen(!visible) }}
@@ -73,7 +76,7 @@ export function Select({ value, options, onValueChange, disabled = false, label,
         if (index >= 0) { event.preventDefault(); setActive(index); setOpen(true) }
       }
     }}><span className="ztab-select-value">{display ?? options[selected]?.label ?? '请选择'}</span><ChevronDown size={14} aria-hidden="true" /></button>
-    {visible && createPortal(<div ref={popup} id={id} role="listbox" aria-label={label} className="ztab-select-popup" data-theme={theme} style={position} onPointerDown={event => event.preventDefault()}>
+    {visible && createPortal(<div ref={popup} id={id} role="listbox" aria-label={label} className="ztab-select-popup" style={position} onPointerDown={event => event.preventDefault()}>
       {options.map((option, index) => <div id={`${id}-${index}`} key={option.value} role="option" aria-selected={option.value === value} className={`ztab-select-option ${index === active ? 'is-active' : ''}`} onPointerMove={() => setActive(index)} onClick={event => { event.stopPropagation(); choose(index) }}><span>{option.label}</span>{option.value === value && <Check size={15} aria-hidden="true" />}</div>)}
     </div>, document.body)}
   </>

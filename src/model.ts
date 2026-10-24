@@ -45,13 +45,14 @@ export interface AppState {
     greeting: string;
     newTab: boolean;
     showWidgets: boolean;
-    searchNewTab: boolean; siteNewTab: boolean;
+    searchNewTab: boolean; siteNewTab: boolean; searchHistoryEnabled: boolean;
     showSearch: boolean; searchHeight: number; searchRadius: number; searchOpacity: number;
     iconRadius: number; iconOpacity: number; iconGap: number; showNames: boolean; nameSize: number; nameColor: string;
     showTime: boolean; showDate: boolean; showWeek: boolean; showLunar: boolean; hour12: boolean; showSeconds: boolean; timeSize: number; timeWeight: number; timeColor: string;
     theme: 'light' | 'dark' | 'system'; accent: string; blur: number;
     mode: 'normal' | 'minimal'; showGreeting: boolean;
-    categoryTransition: 'none' | 'fade' | 'slide';
+    categoryTransition: 'none' | 'fade' | 'slide' | 'slide-horizontal' | 'zoom' | 'blur';
+    categoryTransitionDuration: number;
     sidebarPosition: 'left' | 'right'; sidebarAutoHide: boolean; rememberCategory: boolean; wheelCategories: boolean; sidebarOpacity: number; sidebarWidth: number;
   };
 }
@@ -120,10 +121,10 @@ export const defaults = (): AppState => ({
     greeting: "把日子过成自己喜欢的样子。",
     newTab: true,
     showWidgets: true,
-    searchNewTab: true, siteNewTab: true, showSearch: true, searchHeight: 46, searchRadius: 23, searchOpacity: 91,
+    searchHistoryEnabled: true, searchNewTab: true, siteNewTab: true, showSearch: true, searchHeight: 46, searchRadius: 23, searchOpacity: 91,
     iconRadius: 17, iconOpacity: 100, iconGap: 30, showNames: true, nameSize: 12, nameColor: '#ffffff',
     showTime: true, showDate: true, showWeek: true, showLunar: false, hour12: false, showSeconds: false, timeSize: 72, timeWeight: 300, timeColor: '#ffffff',
-    theme: 'light', accent: '#3b82f6', blur: 0, mode: 'normal', showGreeting: true, categoryTransition: 'fade',
+    theme: 'light', accent: '#3b82f6', blur: 0, mode: 'normal', showGreeting: true, categoryTransition: 'fade', categoryTransitionDuration: 200,
     sidebarPosition: 'left', sidebarAutoHide: false, rememberCategory: false, wheelCategories: false, sidebarOpacity: 17, sidebarWidth: 50,
   },
 });
@@ -196,11 +197,11 @@ export function validateState(input: unknown): AppState {
     searchNewTab: raw.searchNewTab === undefined ? raw.newTab : raw.searchNewTab,
     siteNewTab: raw.siteNewTab === undefined ? raw.newTab : raw.siteNewTab };
   const ranges: Partial<Record<keyof AppState['settings'], [number, number]>> = {
-    searchHeight: [32,80], searchRadius: [0,40], searchOpacity: [10,100], iconRadius: [0,40], iconOpacity: [10,100], iconGap: [0,60], nameSize: [10,24], timeSize: [32,120], timeWeight: [100,900], blur: [0,30], sidebarOpacity: [0,100], sidebarWidth: [44,90] };
+    categoryTransitionDuration: [100,1000], searchHeight: [32,80], searchRadius: [0,40], searchOpacity: [10,100], iconRadius: [0,40], iconOpacity: [10,100], iconGap: [0,60], nameSize: [10,24], timeSize: [32,120], timeWeight: [100,900], blur: [0,30], sidebarOpacity: [0,100], sidebarWidth: [44,90] };
   for (const [key, [min,max]] of Object.entries(ranges)) { const value = p[key as keyof typeof p]; if (typeof value !== 'number' || !Number.isFinite(value) || value < min || value > max) throw new Error('设置数值超出范围'); }
-  for (const key of ['searchNewTab','siteNewTab','showSearch','showNames','showTime','showDate','showWeek','showLunar','hour12','showSeconds','showGreeting','sidebarAutoHide','rememberCategory','wheelCategories'] as const) if (typeof p[key] !== 'boolean') throw new Error('设置开关不正确');
+  for (const key of ['searchHistoryEnabled','searchNewTab','siteNewTab','showSearch','showNames','showTime','showDate','showWeek','showLunar','hour12','showSeconds','showGreeting','sidebarAutoHide','rememberCategory','wheelCategories'] as const) if (typeof p[key] !== 'boolean') throw new Error('设置开关不正确');
   for (const key of ['nameColor','timeColor','accent'] as const) if (typeof p[key] !== 'string' || !/^#[a-fA-F0-9]{6}$/.test(p[key])) throw new Error('设置颜色不正确');
-  if (!['none','fade','slide'].includes(p.categoryTransition) || !['light','dark','system'].includes(p.theme) || !['normal','minimal'].includes(p.mode) || !['left','right'].includes(p.sidebarPosition)) throw new Error('设置选项不正确');
+  if (!['none','fade','slide','slide-horizontal','zoom','blur'].includes(p.categoryTransition) || !['light','dark','system'].includes(p.theme) || !['normal','minimal'].includes(p.mode) || !['left','right'].includes(p.sidebarPosition)) throw new Error('设置选项不正确');
   if (
     !p ||
     !s.engines.some((e) => e.id === p.engine) ||
@@ -249,6 +250,26 @@ export function mergeVisibleOrder(order: TileKey[], visible: TileKey[]): TileKey
   if (keys.size !== visible.length || visible.some(key => !order.includes(key))) throw new Error('无效的磁贴排序');
   let index = 0;
   return order.map(key => keys.has(key) ? visible[index++] : key);
+}
+export function groupLinksIntoFolder(state: AppState, sourceId: string, targetId: string, folderId: string, visibleOrder: TileKey[]): AppState {
+  const source = state.links.find(link => link.id === sourceId);
+  const target = state.links.find(link => link.id === targetId);
+  if (!source || !target || source === target || source.folder || target.folder || source.category !== target.category) throw new Error('只能合并同一分类桌面的两个网站图标');
+  if (!folderId || state.folders.some(folder => folder.id === folderId)) throw new Error('文件夹标识无效');
+  if (state.folders.length >= 100) throw new Error('文件夹数量已达上限');
+  const layout = state.layouts?.[source.category];
+  const sourceKey: TileKey = `link:${sourceId}`;
+  const targetKey: TileKey = `link:${targetId}`;
+  if (!layout || !visibleOrder.includes(sourceKey) || !visibleOrder.includes(targetKey)) throw new Error('图标位置已变化，请重新拖动');
+  const folderKey: TileKey = `folder:${folderId}`;
+  const order = mergeVisibleOrder(layout.order, visibleOrder).filter(key => key !== sourceKey).map(key => key === targetKey ? folderKey : key);
+  const sizes = layout.sizes === undefined ? undefined : Object.fromEntries(Object.entries(layout.sizes).filter(([key]) => key !== sourceKey && key !== targetKey));
+  return {
+    ...state,
+    folders: [...state.folders, { id: folderId, name: '新建文件夹', category: source.category }],
+    links: state.links.map(link => link.id === sourceId || link.id === targetId ? { ...link, folder: folderId } : link),
+    layouts: { ...state.layouts, [source.category]: { ...layout, order, ...(sizes === undefined ? {} : { sizes }) } },
+  };
 }
 function validateLayouts(state: AppState) {
   if (state.layouts === undefined) return;

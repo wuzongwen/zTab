@@ -16,10 +16,12 @@ type Session<T> = {
   order: T[]; destination?: string; target?: HTMLElement; valid: boolean
   slots: (DOMRect | undefined)[]; scrollY: number; scrollTop: number; scrollArea: HTMLElement | null
   lastSwap?: { x: number; y: number }
+  sortHover?: { id: string; since: number }
+  group?: { id: string; node: HTMLElement; rect: DOMRect; since: number; x: number; y: number; ready: boolean }
   cleanup: () => void
 }
 
-export function useTileDrag<T extends { id: string }>({ items, scope, disabled, onCommit, onStart, allowFolders = false, canDrop = () => true }: {
+export function useTileDrag<T extends { id: string }>({ items, scope, disabled, onCommit, onStart, allowFolders = false, canDrop = () => true, canGroup, onGroup }: {
   items: T[]
   scope: string
   disabled?: boolean
@@ -27,13 +29,15 @@ export function useTileDrag<T extends { id: string }>({ items, scope, disabled, 
   onStart?: () => void
   allowFolders?: boolean
   canDrop?: (id: string) => boolean
+  canGroup?: (source: string, target: string) => boolean
+  onGroup?: (source: string, target: string, items: T[]) => Promise<unknown> | void
 }) {
   const [preview, setPreview] = useState<T[] | null>(null)
   const [dragging, setDragging] = useState<string>()
   const session = useRef<Session<T> | null>(null)
   const saving = useRef(false)
-  const latest = useRef({ items, onCommit, onStart, disabled })
-  latest.current = { items, onCommit, onStart, disabled }
+  const latest = useRef({ items, onCommit, onStart, disabled, canGroup, onGroup })
+  latest.current = { items, onCommit, onStart, disabled, canGroup, onGroup }
   const positions = useRef(new Map<HTMLElement, DOMRect>())
   const animations = useRef(new Map<HTMLElement, Animation>())
   const getRoot = () => [...document.querySelectorAll<HTMLElement>('[data-drag-scope]')].find(element => element.dataset.dragScope === scope)
@@ -56,14 +60,20 @@ export function useTileDrag<T extends { id: string }>({ items, scope, disabled, 
     positions.current.clear()
   }, [preview, dragging])
 
+  const clearGroup = (current: Session<T>) => {
+    current.group?.node.classList.remove('tile-group-candidate', 'tile-group-ready')
+    current.group = undefined
+  }
   const reset = () => {
     const current = session.current
     if (!current) return
     current.cleanup()
+    clearGroup(current)
     current.clone?.remove()
     current.target?.classList.remove('tile-drop-target')
     document.body.classList.remove('tiles-dragging')
-    measure()
+    if (current.active) measure()
+    else positions.current.clear()
     session.current = null
     setPreview(null)
     setDragging(undefined)
@@ -130,11 +140,17 @@ export function useTileDrag<T extends { id: string }>({ items, scope, disabled, 
       document.body.append(clone)
       document.body.classList.add('tiles-dragging')
       setDragging(id)
+      update('move')
       tick()
     }
-    const update = () => {
+    const update = (intent: 'move' | 'frame' | 'release' = 'frame') => {
       if (!current.active) return
       current.clone!.style.transform = `translate3d(${current.x - current.offsetX}px, ${current.y - current.offsetY}px, 0)`
+      const scrollTop = current.scrollArea?.scrollTop ?? 0
+      const scrolled = current.scrollY !== window.scrollY || current.scrollTop !== scrollTop
+      if (scrolled) clearGroup(current)
+      current.scrollY = window.scrollY
+      current.scrollTop = scrollTop
       const hit = document.elementsFromPoint(current.x, current.y)
       const destination = allowFolders && canDrop(id) ? hit[0]?.closest<HTMLElement>('[data-link-destination]') : null
       const nextTarget = destination ?? undefined
@@ -146,10 +162,41 @@ export function useTileDrag<T extends { id: string }>({ items, scope, disabled, 
       current.destination = nextTarget?.dataset.linkDestination
       const root = getRoot()
       current.valid = Boolean(nextTarget || (root && hit[0] && (hit[0] === root || root.contains(hit[0]))))
-      if (nextTarget || !current.valid || !root) return
+      if (nextTarget || !current.valid || !root) { clearGroup(current); current.sortHover = undefined; return }
       const nodes = [...root.querySelectorAll<HTMLElement>('[data-sort-id]')].filter(node => node.closest('[data-drag-scope]') === root)
       const targetNode = nodes.find(node => { const r = node.getBoundingClientRect(); return current.x >= r.left && current.x <= r.right && current.y >= r.top && current.y <= r.bottom })
       const target = current.order.find(item => item.id === targetNode?.dataset.sortId)
+      const icon = targetNode?.querySelector<HTMLElement>('.site-icon')
+      const rect = icon?.getBoundingClientRect()
+      const centered = rect && Math.abs(current.x - (rect.left + rect.width / 2)) <= rect.width * .24 && Math.abs(current.y - (rect.top + rect.height / 2)) <= rect.height * .24
+      const animating = targetNode && animations.current.get(targetNode)?.playState === 'running'
+      const groupable = target && target.id !== id && latest.current.onGroup && latest.current.canGroup?.(id, target.id)
+      if (targetNode && target && groupable && centered && !animating) {
+        current.sortHover = undefined
+        const previous = current.group
+        const shifted = previous?.node === targetNode && (Math.abs(previous.rect.left - rect.left) > 1 || Math.abs(previous.rect.top - rect.top) > 1 || previous.rect.width !== rect.width || previous.rect.height !== rect.height)
+        if (previous && (previous.node !== targetNode || shifted)) clearGroup(current)
+        if (!current.group && intent === 'move' && !scrolled && !shifted) {
+          current.group = { id: target.id, node: targetNode, rect, since: performance.now(), x: current.x, y: current.y, ready: false }
+          targetNode.classList.add('tile-group-candidate')
+        }
+        const group = current.group
+        if (group) {
+          if (Math.hypot(current.x - group.x, current.y - group.y) > 4) {
+            group.since = performance.now(); group.x = current.x; group.y = current.y; group.ready = false
+            group.node.classList.remove('tile-group-ready')
+          }
+          if (performance.now() - group.since >= 450) { group.ready = true; group.node.classList.add('tile-group-ready') }
+          if (intent !== 'release' || group.ready) return
+          clearGroup(current)
+        }
+      } else {
+        clearGroup(current)
+        if (groupable && !centered && intent !== 'release') {
+          if (current.sortHover?.id !== target.id) current.sortHover = { id: target.id, since: performance.now() }
+          if (performance.now() - current.sortHover.since < 120) return
+        } else current.sortHover = undefined
+      }
       if (current.lastSwap && Math.hypot(current.x - current.lastSwap.x, current.y - current.lastSwap.y) < 12) return
       if (targetNode?.dataset.sortId === id) return
       if (target && target.id !== id) {
@@ -180,7 +227,7 @@ export function useTileDrag<T extends { id: string }>({ items, scope, disabled, 
         if (touch && distance > 8) { reset(); return }
         if (!touch && distance >= 6) start()
       }
-      if (current.active) { pointer.preventDefault(); update() }
+      if (current.active) { pointer.preventDefault(); update('move') }
     }
     const cancel = () => { if (current.active) armClickGuard(); reset() }
     const escape = (key: KeyboardEvent) => {
@@ -189,18 +236,19 @@ export function useTileDrag<T extends { id: string }>({ items, scope, disabled, 
       }
     }
     const up = async (pointer: PointerEvent) => {
-      if (pointer.pointerId !== current.pointer) return
+      if (pointer.pointerId !== current.pointer || saving.current) return
       if (!current.active) { reset(); return }
       current.x = pointer.clientX
       current.y = pointer.clientY
-      update()
+      update('release')
       armClickGuard()
       current.cleanup()
       current.target?.classList.remove('tile-drop-target')
       if (!current.valid) { reset(); return }
       saving.current = true
       try {
-        await latest.current.onCommit(current.order, current.destination, current.id)
+        if (current.group?.ready && latest.current.onGroup) await latest.current.onGroup(current.id, current.group.id, current.order)
+        else await latest.current.onCommit(current.order, current.destination, current.id)
       } finally { saving.current = false; reset() }
     }
     const touchMove = (touchEvent: TouchEvent) => { if (current.active) touchEvent.preventDefault() }

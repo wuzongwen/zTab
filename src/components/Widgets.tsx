@@ -233,6 +233,7 @@ function WidgetCard({ name, label, expanded, onClose, summary, children, drag, s
   return <article style={style} className={`ztab-widget-card ztab-widget-${name} ${drag.dragging === name ? 'tile-drag-placeholder' : ''}`} aria-label={label} data-expanded={false}
     data-sort-id={`widget:${name}`} onPointerDown={event => { if ((event.target as HTMLElement).closest('.ztab-widget-summary')) drag.onPointerDown(event, name) }} onDragStart={event => event.preventDefault()}>
     {summary}
+    <span className="ztab-widget-summary-label">{label}</span>
     <AnimatedOverlay open={expanded} onClose={onClose} label={`${label}详情`} id={`ztab-widget-detail-${name}`} className={`ztab-widget-dialog ztab-widget-dialog-${name}`}>
       <div className={`ztab-widget-panel ztab-widget-card ztab-widget-${name}`} data-expanded={true}>{children}</div>
     </AnimatedOverlay>
@@ -375,7 +376,6 @@ export function WidgetPanel({ layout, onLayout, renderTiles, drag: externalDrag,
       {key === 'work' && <><span>距离下次下班</span><strong className="ztab-widget-summary-clock">{String(hours).padStart(2, '0')}:{String(minutes).padStart(2, '0')}:{String(seconds % 60).padStart(2, '0')}</strong><span>{pay ? `发薪还有 ${pay.days} 天` : '点击设置发薪日'} · {friday === 0 ? '今天周五' : `距周五 ${friday} 天`}</span></>}
       {key === 'weather' && <><strong>{weatherResult ? `${weatherResult.temperature} °C` : '天气'}</strong><span>{weatherResult ? weatherLabel(weatherResult.code) : '点击手动查询'}</span><small>{weatherResult?.city || state.weather.city || '不定位 · 不自动联网'}</small></>}
       {key === 'movie' && <><span>{today}</span><strong>{state.movie.title || '我的电影日历'}</strong><span>{state.movie.quote || '点击收藏片名与台词'}</span><small>自定义 · 非在线推荐</small></>}
-      <span className="ztab-widget-summary-label">{LABELS[key]}</span>
     </button>
   }
   const tileDrag = { dragging: externalDrag.dragging?.replace(/^widget:/, ''), onPointerDown: (event: ReactPointerEvent<HTMLElement>, id: string) => externalDrag.onPointerDown(event, `widget:${id}`) }

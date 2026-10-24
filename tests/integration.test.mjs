@@ -5,6 +5,125 @@ import vm from 'node:vm';
 import ts from 'typescript';
 import { createHash } from 'node:crypto';
 
+test('shared switches retain controlled native semantics and settings wiring', async () => {
+  const source = await readFile(new URL('../src/components/Switch.tsx', import.meta.url), 'utf8');
+  const mod = { exports: {} };
+  const React = { createElement: (type, props, ...children) => ({ type, props: props ?? {}, children }) };
+  vm.runInNewContext(ts.transpileModule(source.replace(/^import .*$/gm, ''), { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.React } }).outputText, { exports: mod.exports, React });
+  const changes = [];
+  const render = (checked, disabled = false) => mod.exports.Switch({ checked, disabled, 'aria-label': '测试', onCheckedChange: value => changes.push(value) }).children[0];
+  const input = render(false);
+  assert.equal(input.type, 'input');
+  assert.equal(input.props.type, 'checkbox');
+  assert.equal(input.props.role, 'switch');
+  assert.equal(input.props['aria-label'], '测试');
+  input.props.onChange({ currentTarget: { checked: true } });
+  assert.deepEqual(changes, [true]);
+  assert.equal(render(false).props.checked, false);
+  assert.equal(render(true).props.checked, true);
+  render(true, true).props.onChange({ currentTarget: { checked: false } });
+  assert.deepEqual(changes, [true]);
+  const panel = await readFile(new URL('../src/components/SettingsPanel.tsx', import.meta.url), 'utf8');
+  const drawer = await readFile(new URL('../src/components/SettingsDrawer.tsx', import.meta.url), 'utf8');
+  assert.match(panel, /<Switch checked=\{p\[key\] as boolean\} onCheckedChange=\{checked=>void update\(\{\[key\]:checked\}\)\}/);
+  assert.match(drawer, /onCheckedChange=\{checked => void updateSettings\(\{ showWidgets: checked \}\)\}/);
+  assert.match(panel, /update\(\{ sidebarPosition: side \}\)/);
+  assert.doesNotMatch(panel + drawer, /type="checkbox"/);
+});
+
+test('settings dialog contains scrolling content and resets only its scroll on group change', async () => {
+  const drawer = await readFile(new URL('../src/components/SettingsDrawer.tsx', import.meta.url), 'utf8');
+  const css = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');
+  const app = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const effects = [];
+  const content = { scrollTop: 240 };
+  const mod = { exports: {} };
+  const React = { createElement: (type, props, ...children) => ({ type, props: props ?? {}, children: children.flat(Infinity) }) };
+  vm.runInNewContext(ts.transpileModule(drawer.replace(/^import .*$/gm, ''), { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.React } }).outputText, {
+    exports: mod.exports, React, useRef: () => ({ current: content }), useLayoutEffect: (effect, deps) => effects.push({ effect, deps }),
+    Settings: 'svg', ShieldCheck: 'svg', SettingsPanel: 'SettingsPanel', settingGroups: [['opening', '打开方式'], ['about', '关于']],
+  });
+  const nodes = tree => [tree, ...tree.children.filter(node => node && typeof node === 'object').flatMap(nodes)];
+  const groups = [];
+  const render = tab => mod.exports.SettingsDrawer({ state: { engines: [{ id: 'e' }], settings: { engine: 'e' } }, tab, setTab: id => groups.push(id) });
+  const tree = render('opening');
+  const scroll = nodes(tree).find(node => node.props.className === 'settings-scroll');
+  assert.ok(nodes(scroll).some(node => node.type === 'SettingsPanel'));
+  assert.ok(!nodes(scroll).some(node => node.props.className === 'settings-bottom'));
+  assert.equal(nodes(tree).find(node => node.props.className === 'settings-bottom').props.role, 'status');
+  const buttons = nodes(tree).filter(node => node.type === 'button');
+  assert.equal(buttons[0].props['aria-current'], 'page');
+  buttons[1].props.onClick();
+  assert.deepEqual(groups, ['about']);
+  effects[0].effect();
+  assert.equal(content.scrollTop, 0);
+  content.scrollTop = 180;
+  render('about');
+  assert.equal(effects[1].deps[0], 'about');
+  effects[1].effect();
+  assert.equal(content.scrollTop, 0);
+  assert.doesNotMatch(drawer, /\.focus\(|createPortal|onKeyDown/);
+  assert.match(css, /width: 1000px; height: min\(780px, calc\(100dvh - 48px\)\)/);
+  assert.match(css, /grid-template-columns: 180px minmax\(0, 1fr\)/);
+  assert.match(css, /\.settings-scroll \{[^}]*min-height: 0;[^}]*overflow-y: auto;[^}]*overscroll-behavior: contain;/);
+  assert.match(css, /@media\(max-width:700px\)/);
+  assert.doesNotMatch(css, /drawer-in|inset: 0 0 0 auto/);
+  assert.match(app, /if \(dismissSelectOnEscape\(event, panel\)\) return/);
+  assert.match(app, /e.target === e.currentTarget && !busy/);
+});
+
+test('category wheel listener is opt-in and detached when disabled', async () => {
+  const app = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const effect = app.slice(app.lastIndexOf('  useEffect(() => {', app.indexOf('    const onWheel =')), app.indexOf('  const background ='));
+  assert.ok(effect.length > 0);
+  assert.match(effect, /state.settings.wheelCategories, state.settings.categoryTransition/);
+  for (const enabled of [false, true]) {
+    const listeners = [];
+    const body = effect.slice(effect.indexOf('{') + 1, effect.lastIndexOf('}, ['));
+    const cleanup = new Function('ready', 'state', 'document', ts.transpileModule(body, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText)(true, { settings: { wheelCategories: enabled } }, { addEventListener: (...args) => listeners.push(args), removeEventListener: (...args) => listeners.push(args) });
+    assert.equal(listeners.length, enabled ? 1 : 0);
+    if (enabled) { cleanup(); assert.equal(listeners.length, 2); assert.equal(listeners[0][1], listeners[1][1]); }
+  }
+});
+
+test('shared colors validate native and preset changes and stay controlled on rollback', async () => {
+  const source = await readFile(new URL('../src/components/ColorPicker.tsx', import.meta.url), 'utf8');
+  const mod = { exports: {} };
+  const React = { createElement: (type, props, ...children) => ({ type, props: props ?? {}, children: children.flat(Infinity) }) };
+  vm.runInNewContext(ts.transpileModule(source.replace(/^import .*$/gm, ''), { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.React } }).outputText, { exports: mod.exports, React, Palette: 'svg', useId: () => 'hint' });
+  const { ColorPicker, isHexColor } = mod.exports;
+  for (const value of ['#000000', '#ffffff', '#AbC123']) assert.equal(isHexColor(value), true);
+  for (const value of ['', '#fff', 'abcdef', '#abcdef00', '#abcdeg', 'red', '#123456\n']) assert.equal(isHexColor(value), false);
+  const nodes = tree => [tree, ...tree.children.filter(node => node && typeof node === 'object').flatMap(nodes)];
+  const changes = [];
+  const render = (value, disabled = false) => nodes(ColorPicker({ value, label: '颜色', disabled, presets: ['#abcdef'], onValueChange: value => changes.push(value) }));
+  let tree = render('#123456');
+  const input = tree.find(node => node.type === 'input');
+  assert.equal(input.props.value, '#123456');
+  for (const value of ['#123', 'red', '#123456']) input.props.onChange({ currentTarget: { value } });
+  assert.deepEqual(changes, []);
+  input.props.onChange({ currentTarget: { value: '#ABCDEF' } });
+  assert.deepEqual(changes, ['#ABCDEF']);
+  tree = render('#ABCDEF');
+  assert.equal(tree.find(node => node.type === 'button').props['aria-pressed'], true);
+  tree = render('#123456'); // parent rollback is the sole displayed source
+  assert.equal(tree.find(node => node.type === 'strong').children[0], '#123456');
+  tree.find(node => node.type === 'button').props.onClick();
+  assert.equal(changes.at(-1), '#abcdef');
+  for (const node of render('#123456', true).filter(node => ['input', 'button'].includes(node.type))) {
+    assert.equal(node.props.disabled, true);
+    if (node.type === 'button') node.props.onClick();
+    else node.props.onChange({ currentTarget: { value: '#000000' } });
+  }
+  assert.equal(changes.length, 2);
+  const panel = await readFile(new URL('../src/components/SettingsPanel.tsx', import.meta.url), 'utf8');
+  for (const key of ['accent', 'nameColor', 'timeColor']) assert.ok(panel.includes(`color('${key}'`));
+  assert.match(panel, /<ColorPicker label=\{label\} value=\{p\[key\]\} onValueChange=\{value=>void update\(\{\[key\]:value\}\)\}/);
+  const app = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  assert.match(app, /<ColorPicker label="图标颜色" value=\{color\} onValueChange=\{setColor\} presets=\{palette\} disabled=\{busy \|\| uploading\}/);
+  assert.doesNotMatch(panel + app, /type="color"|className="color-options"/);
+});
+
 test('desktop entrances, hidden scrolling and icon column controls stay scoped', async () => {
   const app = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
   const css = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');
@@ -24,6 +143,185 @@ test('desktop entrances, hidden scrolling and icon column controls stay scoped',
   assert.match(panel, /disabled=\{pending\} onClick=\{\(\) => pluginInput\.current\?\.click\(\)\}/);
   assert.match(panel, /ref=\{pluginInput\} hidden/);
   assert.match(panel, /perform\(\(\) => importPlugin\(file\)/);
+});
+
+test('desktop focus stays borderless without removing keyboard context menu support', async () => {
+  const app = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const css = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');
+  assert.match(app, /<main className="desktop" tabIndex=\{-1\}[^\n]*onKeyDown=/);
+  assert.match(css, /:root \.desktop:focus-visible\s*\{\s*outline: none;\s*box-shadow: none;\s*\}/);
+  assert.ok(css.indexOf(':root .desktop:focus-visible') > css.indexOf(':root :is(button,input,textarea,select,[tabindex]):focus-visible'));
+  assert.match(css, /:root :is\(button,input,textarea,select,\[tabindex\]\):focus-visible,[\s\S]*?box-shadow: inset 0 0 0 2px var\(--focus\)/);
+});
+
+test('appreciation replaces appearance shortcut and preserves the original local QR image', async () => {
+  const app = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const source = await readFile(new URL('../src/components/AppreciationPopover.tsx', import.meta.url), 'utf8');
+  const image = await readFile(new URL('../public/wechat-appreciation.jpeg', import.meta.url));
+  assert.equal(createHash('sha256').update(image).digest('hex'), 'c19265de3c9750d55c20dc83c2cc4626772da012cafa546c7c8f6240f6309384');
+  assert.match(app, /<AppreciationPopover open=\{appreciating\} onOpenChange=\{setAppreciating\} side=\{state.settings.sidebarPosition\}/);
+  assert.match(app, /categoryMenu \|\| appreciating \? 'sidebar-pinned'/);
+  assert.match(app, /if \(modal \|\| adding \|\| folder \|\| siteMenu \|\| tileMenu \|\| categoryMenu \|\| deleting\) setAppreciating\(false\)/);
+  assert.match(app, /title="桌面设置"/);
+  assert.doesNotMatch(app, /title="外观设置"/);
+  assert.match(source, /import.meta.env.BASE_URL\}wechat-appreciation.jpeg/);
+  assert.doesNotMatch(source, /fetch\(|window.open|location.href|aria-modal|preventDefault\(\).*Tab/);
+});
+
+test('appreciation popover toggles, closes safely, positions in the viewport and removes listeners', async () => {
+  const source = await readFile(new URL('../src/components/AppreciationPopover.tsx', import.meta.url), 'utf8');
+  const css = await readFile(new URL('../src/components/appreciation-popover.css', import.meta.url), 'utf8');
+  assert.match(css, /grid-auto-rows: max-content;/);
+  assert.match(css, /overflow-y: auto;/);
+  assert.match(css, /overscroll-behavior: contain;/);
+  const code = ts.transpileModule(source.replace(/^import .*$/gm, '').replaceAll('import.meta.env.BASE_URL', '"/ztab/"'), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.React },
+  }).outputText;
+  for (const [side, width, height] of [['left', 1200, 800], ['right', 1200, 800], ['left', 240, 320], ['left', 320, 220], ['right', 320, 200]]) {
+    const changes = [], effects = [], targets = [];
+    const eventTarget = () => {
+      const listeners = new Map();
+      const target = {
+        listeners,
+        addEventListener(name, handler) { assert.ok(!listeners.has(name)); listeners.set(name, handler); },
+        removeEventListener(name, handler) { assert.equal(listeners.get(name), handler); listeners.delete(name); },
+      };
+      targets.push(target);
+      return target;
+    };
+    const sidebar = eventTarget();
+    const button = {
+      contains: node => node === button,
+      closest: () => sidebar,
+      focus() { button.focused = true; },
+      getBoundingClientRect: () => ({ left: side === 'left' ? 10 : width - 38, right: side === 'left' ? 38 : width - 10, bottom: height - 50 }),
+    };
+    const popup = {
+      style: {}, contains: node => node === popup,
+      getBoundingClientRect() {
+        const width = parseFloat(popup.style.width);
+        const lines = Math.ceil(10 / Math.max(1, Math.floor((width - 26) / 12)));
+        const contentHeight = width + 42 + 18 * lines;
+        return { width, height: Math.min(contentHeight, parseFloat(popup.style.maxHeight) || Infinity) };
+      },
+    };
+    const viewport = { ...eventTarget(), offsetLeft: 0, offsetTop: 0, width, height };
+    const window = { ...eventTarget(), visualViewport: viewport, innerWidth: width, innerHeight: height };
+    const document = { ...eventTarget(), body: {} };
+    const refs = [button, popup];
+    let observed = [], disconnected = false;
+    const React = { createElement: (type, props, ...children) => ({ type, props: props ?? {}, children: children.flat(Infinity) }) };
+    const mod = { exports: {} };
+    vm.runInNewContext(code, {
+      exports: mod.exports, React, Heart: 'Heart', X: 'X', window, document,
+      useId: () => 'appreciation', useRef: () => ({ current: refs.shift() }),
+      useLayoutEffect: effect => effects.push(effect), createPortal: tree => tree,
+      ResizeObserver: class { observe(node) { observed.push(node); } disconnect() { disconnected = true; } },
+    });
+    const tree = mod.exports.AppreciationPopover({ open: true, onOpenChange: value => changes.push(value), side });
+    const trigger = tree.children[0], panel = tree.children[1];
+    assert.equal(trigger.props['aria-expanded'], true);
+    assert.equal(trigger.props['aria-controls'], panel.props.id);
+    assert.equal(panel.props.role, 'dialog');
+    assert.equal(panel.props['aria-modal'], undefined);
+    assert.equal(panel.children[1].props.src, '/ztab/wechat-appreciation.jpeg');
+    trigger.props.onClick();
+    assert.deepEqual(changes, [false]);
+    const cleanup = effects[0]();
+    assert.deepEqual(observed, [button, popup]);
+    const left = parseFloat(popup.style.left), top = parseFloat(popup.style.top);
+    const size = popup.getBoundingClientRect();
+    assert.ok(left >= 8 && left + size.width <= width - 8);
+    assert.ok(top >= 8 && top + size.height <= height - 8);
+    if (width === 1200) assert.ok(side === 'left' ? left > button.getBoundingClientRect().right : left + size.width < button.getBoundingClientRect().left);
+    document.listeners.get('pointerdown')({ target: button });
+    document.listeners.get('pointerdown')({ target: popup });
+    assert.equal(changes.length, 1);
+    document.listeners.get('pointerdown')({ target: {} });
+    assert.equal(changes.length, 2);
+    assert.equal(button.focused, undefined);
+    let prevented = false, stopped = false;
+    document.listeners.get('keydown')({ key: 'Escape', preventDefault() { prevented = true; }, stopImmediatePropagation() { stopped = true; } });
+    assert.equal(button.focused, true);
+    assert.ok(prevented && stopped);
+    viewport.width = 220;
+    window.listeners.get('resize')();
+    assert.ok(parseFloat(popup.style.left) + parseFloat(popup.style.width) <= 212);
+    cleanup();
+    assert.equal(disconnected, true);
+    assert.ok(targets.every(target => target.listeners.size === 0));
+  }
+});
+
+test('category frames and two-phase snapshots preserve cancellation wiring', async () => {
+  const app = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const panel = await readFile(new URL('../src/components/SettingsPanel.tsx', import.meta.url), 'utf8');
+  const helper = app.slice(app.indexOf('function categoryFrames'), app.indexOf('type Modal ='));
+  const context = {}; vm.createContext(context);
+  vm.runInContext(ts.transpileModule(helper, {compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText, context);
+  for (const effect of ['fade','slide','slide-horizontal','zoom','blur']) for (const direction of [-1,1]) {
+    const out = context.categoryFrames(effect,direction,false), into = context.categoryFrames(effect,direction,true);
+    assert.equal(out[0].opacity,1); assert.equal(out[1].opacity,0);
+    assert.equal(into[0].opacity,0); assert.equal(into[1].opacity,1);
+    if (effect === 'slide-horizontal') assert.equal(into[0].transform,`translateX(${direction * 10}px)`);
+    if (effect === 'slide') assert.equal(out[1].transform,`translateY(${-direction * 10}px)`);
+    if (effect === 'zoom') { assert.equal(out[1].transform,'scale(1.03)'); assert.equal(into[0].transform,'scale(0.97)'); }
+    if (effect === 'blur') assert.equal(into[0].filter,'blur(4px)');
+  }
+  assert.match(app,/categoryTransitionDuration \/ 2/);
+  assert.match(app,/pendingEntrance.current = \{ sequence, direction, effect, duration \}/);
+  assert.match(app,/categoryFrames\(pending.effect, pending.direction, true\)/);
+  assert.match(app,/duration: pending.duration/);
+  assert.match(app,/sequence !== transitionSequence.current/);
+  assert.match(app,/categoryTransitionDuration, categoryIds\]/);
+  assert.match(app,/onStart: \(\) => \{ switchCategoryImmediately\(active\)/);
+  assert.match(panel,/disabled=\{p.categoryTransition === 'none'\}/);
+  assert.match(panel,/越小越快/);
+});
+
+test('settings ranges wire bounded visual progress without changing native values or save handlers', async () => {
+  const panel = await readFile(new URL('../src/components/SettingsPanel.tsx', import.meta.url), 'utf8');
+  const drawer = await readFile(new URL('../src/components/SettingsDrawer.tsx', import.meta.url), 'utf8');
+  const css = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');
+  const helper = panel.slice(panel.indexOf('export function rangeStyle'), panel.indexOf('export const settingGroups'));
+  const mod = { exports: {} };
+  vm.runInNewContext(ts.transpileModule(helper, { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText, { exports: mod.exports });
+  for (const [value, min, max, expected] of [[42,42,80,'0%'], [61,42,80,'50%'], [80,42,80,'100%'], [12,4,20,'50%'], [30,0,60,'50%'], [-1,0,60,'0%'], [100,0,60,'100%'], [5,5,5,'0%']]) {
+    assert.equal(mod.exports.rangeStyle(value, min, max)['--range-progress'], expected);
+  }
+  assert.match(panel, /style=\{rangeStyle\(p\[key\] as number, min, max\)\}/);
+  assert.match(panel, /onChange=\{e=>void update\(\{\[key\]:Number\(e.target.value\)\}\)\}/);
+  for (const [key, min, max] of [['dim',0,60], ['columns',4,20], ['size',42,80]]) {
+    assert.ok(drawer.includes(`style={rangeStyle(state.settings.${key}, ${min}, ${max})}`));
+    assert.ok(drawer.includes(`updateSettings({ ${key}: Number(e.target.value) })`));
+  }
+  const rangeFields = [...(panel + drawer).matchAll(/<label className="range-field"[\s\S]*?<\/label>/g)];
+  assert.equal(rangeFields.length, 5);
+  for (const [field] of rangeFields) assert.doesNotMatch(field, /onKeyDown|preventDefault|step=/);
+  for (const pseudo of ['::-webkit-slider-runnable-track', '::-webkit-slider-thumb', '::-moz-range-track', '::-moz-range-progress', '::-moz-range-thumb', ':disabled', ':focus-visible', ':not(:disabled):active']) {
+    assert.ok(css.includes(`.settings-shell .range-field input[type=range]${pseudo}`));
+  }
+  assert.match(css, /linear-gradient\(to right, var\(--accent\) 0 var\(--range-progress/);
+  assert.match(css, /:root \.settings-shell \.range-field input\[type=range\]:focus-visible \{\s*outline: none;\s*box-shadow: none;/);
+});
+
+test('tile names stay outside size-contained bodies and respect name preferences', async () => {
+  const css = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');
+  const widgets = await readFile(new URL('../src/components/Widgets.tsx', import.meta.url), 'utf8');
+  const widgetCss = await readFile(new URL('../src/components/widgets.css', import.meta.url), 'utf8');
+  const app = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  assert.match(app, /data-names=\{state.settings.showNames\}/);
+  assert.match(app, /'--name-color': state.settings.nameColor/);
+  assert.match(css, /\.site\[data-sort-id\] > \.site-label \{[^}]*position: absolute; top: 100%/);
+  assert.match(css, /\.ztab-widget-card\[data-sort-id\]:not\(\.ztab-widget-plugin\) \{ overflow: visible/);
+  assert.match(css, /\.ztab-widget-summary \{[^}]*overflow: hidden/);
+  assert.match(css, /\.ztab-widget-card > \.ztab-widget-summary-label \{ display: block; font-size: var\(--name-size\); color: var\(--name-color\)/);
+  for (const selector of ['.site-label', '.ztab-widget-summary-label']) {
+    assert.ok(css.includes(`.app[data-names=false] ${selector} { visibility: hidden; }`));
+  }
+  assert.match(widgets, /\{summary\}\s*<span className="ztab-widget-summary-label">\{label\}<\/span>/);
+  assert.doesNotMatch(widgets, /summary-label">\{LABELS\[key\]\}/);
+  assert.match(widgetCss, /:not\(\.ztab-widget-summary\):not\(\.ztab-widget-summary-label\)\{display:none\}/);
 });
 
 test('navigation category context menu reuses category editing and safe removal', async () => {
@@ -82,7 +380,10 @@ test('all business selects share accessible portalled control and layer ownershi
   assert.match(source, /aria-activedescendant/);
   assert.match(source, /option.value !== value/);
   assert.match(source, /createPortal/);
-  assert.match(source, /data-theme=\{theme\}/);
+  assert.doesNotMatch(source, /data-theme=|matchMedia/);
+  const styles = await readFile(new URL('../src/components/select.css', import.meta.url), 'utf8');
+  assert.match(styles, /--select-bg:var\(--input-bg\)/);
+  assert.doesNotMatch(styles, /prefers-color-scheme/);
   const layerSource = await readFile(new URL('../src/components/selectLayers.ts', import.meta.url), 'utf8');
   const code = ts.transpileModule(layerSource, { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText;
   class Node { constructor(parent) { this.parent = parent; } contains(target) { return target === this || !!target?.parent && this.contains(target.parent); } }
@@ -273,7 +574,7 @@ test('compact widget tiles use native summary buttons and preserve full detail e
     assert.ok(widgetSource.includes(`setExpanded(expanded === '${key}' ? null : '${key}')`));
   }
   assert.match(widgetSource, /className="ztab-widget-summary-label"/);
-  assert.match(css, /:not\(\.ztab-widget-plugin\):not\(\[data-expanded=true\]\)>:not\(\.ztab-widget-summary\)\{display:none\}/);
+  assert.match(css, /:not\(\.ztab-widget-plugin\):not\(\[data-expanded=true\]\)>:not\(\.ztab-widget-summary\):not\(\.ztab-widget-summary-label\)\{display:none\}/);
   assert.match(css, /overflow:visible/);
   assert.match(css, /width:150px;height:150px/);
   assert.match(css, /width:330px;grid-column:span 2/);

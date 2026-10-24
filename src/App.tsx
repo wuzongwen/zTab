@@ -1,3 +1,6 @@
+import { useRootTheme } from './theme';
+import { SearchBar } from './components/SearchBar';
+import { AppreciationPopover } from './components/AppreciationPopover';
 import { CategoryIconPicker } from './components/CategoryIconPicker';
 import { CategoryIcon } from './components/categoryIcons';
 import { AddIconPanel } from "./components/AddIconPanel";
@@ -11,7 +14,6 @@ import {
 } from "react";
 import { createPortal } from 'react-dom';
 import {
-  Search,
   Plus,
   Settings,
   X,
@@ -22,14 +24,13 @@ import {
   Upload,
   Check,
   LayoutGrid,
-  Image,
   SlidersHorizontal,
   Link as LinkIcon,
   Sun,
 } from "lucide-react";
 import { WidgetPanel, validateWidgetBackup, widgetLayoutSeed, parseWidgetState } from "./components/Widgets";
 import {
-  defaults, reconcileLayouts, mergeVisibleOrder, TILE_SIZES, tileSize, type TileSize, type TileKey, type CategoryLayout,
+  defaults, reconcileLayouts, mergeVisibleOrder, groupLinksIntoFolder, TILE_SIZES, tileSize, type TileSize, type TileKey, type CategoryLayout,
   uid,
   palette,
   safeUrl,
@@ -47,11 +48,20 @@ import { AnimatedOverlay } from './components/AnimatedOverlay';
 import { useTileDrag, reorderItems } from './useTileDrag';
 import "./styles.css";
 import { Select } from './components/Select';
+import { ColorPicker } from './components/ColorPicker';
 import { dismissSelectOnEscape, ownsFloatingTarget } from './components/selectLayers';
+
+function categoryFrames(effect: AppState['settings']['categoryTransition'], direction: number, entering: boolean): Keyframe[] {
+  const rest = { opacity: 1, transform: 'none', filter: 'blur(0px)' };
+  const offset = entering ? direction * 10 : -direction * 10;
+  const hidden = { opacity: 0, transform: effect === 'slide' ? `translateY(${offset}px)` : effect === 'slide-horizontal' ? `translateX(${offset}px)` : effect === 'zoom' ? `scale(${entering ? 0.97 : 1.03})` : 'none', filter: effect === 'blur' ? 'blur(4px)' : 'blur(0px)' };
+  return entering ? [hidden, rest] : [rest, hidden];
+}
 
 type Modal = "link" | "folder" | "category" | "settings" | null;
 export default function App() {
   const [state, setState] = useState<AppState>(defaults);
+  useRootTheme(state.settings.theme, state.settings.accent);
   const [ready, setReady] = useState(false);
   const gridRef = useRef<HTMLDivElement>(null);
   const [fittingColumns, setFittingColumns] = useState(4);
@@ -73,7 +83,8 @@ export default function App() {
   const requestedCategory = useRef(active);
   const transitionSequence = useRef(0);
   const categoryAnimation = useRef<Animation | null>(null);
-  const pendingEntrance = useRef<{ sequence: number; direction: number } | null>(null);
+  const pendingEntrance = useRef<{ sequence: number; direction: number; effect: AppState['settings']['categoryTransition']; duration: number } | null>(null);
+  const categoryIds = JSON.stringify(state.categories.map(c => c.id));
   const [transitionCommit, setTransitionCommit] = useState(0);
   function cancelCategoryAnimation() {
     transitionSequence.current++;
@@ -100,14 +111,12 @@ export default function App() {
     }
     const direction = wheelDirection ?? (state.categories.findIndex(c => c.id === id) >= state.categories.findIndex(c => c.id === previous) ? 1 : -1);
     const sequence = transitionSequence.current;
-    const animation = element.animate([
-      { opacity: 1, transform: 'translateY(0)' },
-      { opacity: 0, transform: `translateY(${effect === 'slide' ? -direction * 10 : 0}px)` },
-    ], { duration: 100, easing: 'ease-in', fill: 'forwards' });
+    const duration = state.settings.categoryTransitionDuration / 2;
+    const animation = element.animate(categoryFrames(effect, direction, false), { duration, easing: 'ease-in', fill: 'forwards' });
     categoryAnimation.current = animation;
     void animation.finished.then(() => {
       if (sequence !== transitionSequence.current) return;
-      pendingEntrance.current = { sequence, direction };
+      pendingEntrance.current = { sequence, direction, effect, duration };
       setActive(id);
       setTransitionCommit(sequence);
     }).catch(() => { /* Cancellation is expected when a newer selection wins. */ });
@@ -119,10 +128,7 @@ export default function App() {
     categoryAnimation.current?.cancel();
     const element = sectionRef.current;
     if (!element?.animate) { categoryAnimation.current = null; return; }
-    const animation = element.animate([
-      { opacity: 0, transform: `translateY(${state.settings.categoryTransition === 'slide' ? pending.direction * 10 : 0}px)` },
-      { opacity: 1, transform: 'translateY(0)' },
-    ], { duration: 100, easing: 'ease-out' });
+    const animation = element.animate(categoryFrames(pending.effect, pending.direction, true), { duration: pending.duration, easing: 'ease-out' });
     categoryAnimation.current = animation;
     void animation.finished.then(() => {
       if (pending.sequence === transitionSequence.current) {
@@ -142,7 +148,7 @@ export default function App() {
     const media = window.matchMedia('(prefers-reduced-motion: reduce)');
     media.addEventListener('change', settle);
     return () => { media.removeEventListener('change', settle); cancelCategoryAnimation(); };
-  }, [state.settings.categoryTransition, state.categories]);
+  }, [state.settings.categoryTransition, state.settings.categoryTransitionDuration, categoryIds]);
   useEffect(() => {
     if (!ready) return;
     const target = state.categories.some(c => c.id === active) ? active : state.categories[0].id;
@@ -153,7 +159,6 @@ export default function App() {
   const [deleting, setDeleting] = useState<{ key: TileKey; category: string } | { key: `category:${string}`; category: string; target: string; sourceName: string; targetName: string }>();
   const [editing, setEditing] = useState<LinkItem>();
   const [notice, setNotice] = useState("");
-  const [query, setQuery] = useState("");
   const [now, setNow] = useState(new Date());
   const [manage, setManage] = useState(false);
   const [tab, setTab] = useState("opening");
@@ -332,26 +337,22 @@ export default function App() {
   function layoutButtons(key: TileKey) {
     return <div className="tile-layout"><span>布局</span><div>{TILE_SIZES.map(size => <button key={size} aria-pressed={tileSize(layout, key) === size} disabled={busy} onClick={async () => { const current = stateRef.current; const target = current.layouts?.[category.id]; if (!target) return; await commit({ ...current, layouts: { ...current.layouts, [category.id]: { ...target, sizes: { ...target.sizes, [key]: size as TileSize } } } }); }}>{size.replace('x', '×')}</button>)}</div></div>;
   }
-  const desktopDrag = useTileDrag({ items: layout.order.filter(key => !layout.hidden.includes(key) && (state.settings.showWidgets || (!key.startsWith('widget:') && !key.startsWith('plugin:')))).map(id => ({ id })), scope: `desktop-${category.id}`, disabled: busy || !!modal || !!folder || !!deleting, allowFolders: true, canDrop: id => id.startsWith('link:'), onStart: () => { switchCategoryImmediately(active); setSiteMenu(undefined); setTileMenu(undefined) }, onCommit: async (items, destination, source) => {
+  const desktopDrag = useTileDrag({ items: layout.order.filter(key => !layout.hidden.includes(key) && (state.settings.showWidgets || (!key.startsWith('widget:') && !key.startsWith('plugin:')))).map(id => ({ id })), scope: `desktop-${category.id}`, disabled: busy || !!modal || !!folder || !!deleting, allowFolders: true, canDrop: id => id.startsWith('link:'), canGroup: (source, target) => source.startsWith('link:') && target.startsWith('link:'), onGroup: async (source, target, items) => {
+    try {
+      const next = groupLinksIntoFolder(stateRef.current, source.slice(5), target.slice(5), uid(), items.map(item => item.id));
+      if (await commit(next)) tell('已创建文件夹，可打开后重命名');
+    } catch (error) { tell(error instanceof Error ? error.message : '创建文件夹失败，请重试'); }
+  }, onStart: () => { switchCategoryImmediately(active); setSiteMenu(undefined); setTileMenu(undefined) }, onCommit: async (items, destination, source) => {
     if (destination !== undefined && source.startsWith('link:')) { await moveLink(source.slice(5), category.id, destination || undefined); return; }
     await saveLayout({ ...layout, order: mergeVisibleOrder(layout.order, items.map(item => item.id)) });
   } });
   const folderDrag = useTileDrag({ items: folderLinks, scope: `folder-${folder ?? ''}`, disabled: busy || !!modal || !!deleting || !folder, allowFolders: true, onStart: () => setSiteMenu(undefined), onCommit: saveOrder });
   const folderTileDrag = desktopDrag;
-  const engine =
-    state.engines.find((e) => e.id === state.settings.engine) ??
-    state.engines[0];
-  function search(e: FormEvent) {
-    e.preventDefault();
-    if (!query.trim()) return;
-    const url = safeUrl(
-      engine.template.replaceAll("{query}", encodeURIComponent(query.trim())),
-    );
-    if (state.settings.searchNewTab)
-      window.open(url, "_blank", "noopener,noreferrer");
-    else window.location.assign(url);
-  }
   const [adding, setAdding] = useState(false);
+  const [appreciating, setAppreciating] = useState(false);
+  useEffect(() => {
+    if (modal || adding || folder || siteMenu || tileMenu || categoryMenu || deleting) setAppreciating(false);
+  }, [modal, adding, folder, siteMenu, tileMenu, categoryMenu, deleting]);
   function openLink(item?: LinkItem) {
     if (!item) { setAdding(true); return; }
     setEditing(item);
@@ -519,7 +520,7 @@ export default function App() {
   async function reset() {
     if (
       !confirm(
-        "确定清空所有自定义链接、壁纸和组件数据，并恢复初始桌面？此操作不能撤销，请先导出备份。",
+        "确定清空所有自定义链接、壁纸和组件数据，并恢复初始桌面？此操作不能撤销，请先导出备份。独立搜索历史将保留，可在搜索设置中单独清空。",
       )
     )
       return;
@@ -568,10 +569,10 @@ export default function App() {
     </div>);
   }
   useEffect(() => {
-    if (!ready) return;
+    if (!ready || !state.settings.wheelCategories) return;
     const onWheel = (event: WheelEvent) => {
       const target = event.target;
-      if (!(target instanceof Element) || !target.closest('.app') || target.closest('input, textarea, select, [role="combobox"], [contenteditable="true"], .ztab-widget-card, .site-context-menu, .modal-backdrop, .animated-overlay') || modal || adding || folder || siteMenu || tileMenu || categoryMenu || busy || event.ctrlKey || event.metaKey || Math.abs(event.deltaY) < 5 || Math.abs(event.deltaX) > Math.abs(event.deltaY) || state.categories.length < 2) return;
+      if (!(target instanceof Element) || !target.closest('.app') || target.closest('.search, input, textarea, select, [role="combobox"], [contenteditable="true"], .ztab-widget-card, .site-context-menu, .modal-backdrop, .animated-overlay') || modal || adding || folder || siteMenu || tileMenu || categoryMenu || busy || event.ctrlKey || event.metaKey || Math.abs(event.deltaY) < 5 || Math.abs(event.deltaX) > Math.abs(event.deltaY) || state.categories.length < 2) return;
       event.preventDefault();
       if (Date.now() - wheelTime.current < 350) return;
       wheelTime.current = Date.now();
@@ -581,7 +582,7 @@ export default function App() {
     };
     document.addEventListener('wheel', onWheel, { passive: false });
     return () => document.removeEventListener('wheel', onWheel);
-  }, [ready, modal, adding, folder, siteMenu, tileMenu, categoryMenu, busy, state.categories, active, state.settings.categoryTransition, desktopDrag.dragging]);
+  }, [ready, modal, adding, folder, siteMenu, tileMenu, categoryMenu, busy, state.categories, active, state.settings.wheelCategories, state.settings.categoryTransition, state.settings.categoryTransitionDuration, desktopDrag.dragging]);
   const background = state.settings.wallpaper.startsWith("data:")
     ? { backgroundImage: `url(${state.settings.wallpaper})` }
     : {};
@@ -595,14 +596,14 @@ export default function App() {
   return (
     <div
       className={`app wallpaper-${state.settings.wallpaper.startsWith("data:") ? "custom" : state.settings.wallpaper}`}
-      data-theme={state.settings.theme} data-side={state.settings.sidebarPosition} data-autohide={state.settings.sidebarAutoHide} data-mode={state.settings.mode} data-names={state.settings.showNames}
+      data-theme={state.settings.theme} data-side={state.settings.sidebarPosition} data-autohide={state.settings.sidebarAutoHide} data-names={state.settings.showNames}
       style={{ ...background, '--sidebar-width': `${state.settings.sidebarWidth}px`, '--sidebar-alpha': state.settings.sidebarOpacity / 100, '--icon-radius': `${state.settings.iconRadius}px`, '--icon-opacity': state.settings.iconOpacity / 100, '--icon-gap': `${state.settings.iconGap}px`, '--name-size': `${state.settings.nameSize}px`, '--name-color': state.settings.nameColor, '--time-size': `${state.settings.timeSize}px`, '--time-weight': state.settings.timeWeight, '--time-color': state.settings.timeColor, '--search-height': `${state.settings.searchHeight}px`, '--search-radius': `${state.settings.searchRadius}px`, '--search-alpha': state.settings.searchOpacity / 100, '--accent': state.settings.accent, '--wallpaper-blur': `${state.settings.blur}px` } as unknown as CSSProperties}
     >
       <div
         className="wallpaper-shade"
         style={{ background: `rgba(12,19,49,${state.settings.dim / 100})` }}
       />
-      <aside className={`sidebar ${modal || siteMenu || tileMenu || categoryMenu ? 'sidebar-pinned' : ''}`} aria-label="本地桌面导航">
+      <aside className={`sidebar ${modal || siteMenu || tileMenu || categoryMenu || appreciating ? 'sidebar-pinned' : ''}`} aria-label="本地桌面导航">
         <button
           className="logo"
           title="zTab 首页"
@@ -653,15 +654,7 @@ export default function App() {
           </button>
         </nav>
         <div className="sidebar-bottom">
-          <button
-            title="外观设置"
-            onClick={() => {
-              setTab("theme");
-              setModal("settings");
-            }}
-          >
-            <Image size={20} />
-          </button>
+          <AppreciationPopover open={appreciating} onOpenChange={setAppreciating} side={state.settings.sidebarPosition} />
           <button title="桌面设置" onClick={() => setModal("settings")}>
             <Settings size={21} />
           </button>
@@ -674,14 +667,14 @@ export default function App() {
           </span>
         </div>
         <header className="hero">
-          <button className="clock" hidden={!state.settings.showTime} aria-label="当前时间，点击切换普通或极简桌面" title="切换普通 / 极简桌面" onClick={() => void updateSettings({ mode: state.settings.mode === 'normal' ? 'minimal' : 'normal' })}>
+          <div className="clock" hidden={!state.settings.showTime} aria-label="当前时间">
             {now.toLocaleTimeString("zh-CN", {
               hour: "2-digit",
               minute: "2-digit",
               hour12: state.settings.hour12,
               second: state.settings.showSeconds ? '2-digit' : undefined,
             })}
-          </button>
+          </div>
           <div className="date">
             {(state.settings.showDate || state.settings.showWeek) && now.toLocaleDateString("zh-CN", {
               month: state.settings.showDate ? "long" : undefined,
@@ -691,18 +684,7 @@ export default function App() {
             {state.settings.showLunar && <small>{new Intl.DateTimeFormat('zh-CN-u-ca-chinese', {month:'long', day:'numeric'}).format(now)}</small>}
             <Sun size={15} />
           </div>
-          <form className="search" hidden={!state.settings.showSearch} onSubmit={search}>
-            <div className="engine-select"><Select label="搜索引擎" theme={state.settings.theme} compact display={engine.name === '必应' ? 'b' : engine.name.slice(0, 1)} value={engine.id} options={state.engines.map(e => ({ value: e.id, label: e.name }))} onValueChange={engine => void updateSettings({ engine })} /></div>
-            <input
-              aria-label="搜索内容"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="搜索一下，发现更多可能"
-            />
-            <button aria-label="搜索" type="submit">
-              <Search size={21} />
-            </button>
-          </form>
+          <SearchBar state={state} updateSettings={updateSettings} tell={tell} context={JSON.stringify([active, modal, adding, folder, !!siteMenu, !!tileMenu, !!categoryMenu, !!deleting])} />
         </header>
         <div className="workspace">
           <section ref={sectionRef} className="links-section desktop-view">
@@ -786,11 +768,6 @@ export default function App() {
             )}
           </section>
         </div>
-        <footer className="quote" hidden={!state.settings.showGreeting}>
-          <span>“</span>
-          {state.settings.greeting}
-          <small>留一点时间，给生活里的小美好</small>
-        </footer>
         <div className="corner-label">
           zTab <span>·</span> Make room for inspiration.
         </div>
@@ -841,7 +818,7 @@ export default function App() {
           style={{ left: siteMenu.x, top: siteMenu.y }}>
           <strong>{siteMenu.item.title}</strong>
           {!siteMenu.item.folder && layoutButtons(`link:${siteMenu.item.id}`)}
-          <button disabled={busy} onClick={() => { openLink(siteMenu.item); setSiteMenu(undefined); }}><Pencil size={15} /> 编辑网站</button>
+          <button disabled={busy} onClick={() => { openLink(siteMenu.item); setSiteMenu(undefined); }}><Pencil size={15} /> 编辑图标</button>
           <label>移动到分类
             <Select label="移动到分类" theme={state.settings.theme} disabled={busy} value={siteMenu.item.category} onValueChange={value => void moveLink(siteMenu.item.id, value)} options={state.categories.map(c => ({ value: c.id, label: c.name }))} />
           </label>
@@ -1191,20 +1168,7 @@ function LinkEditor({
         <small>实时预览 · 保存后生效</small>
       </div>
       <div className="icon-options">
-        <div className="color-options">
-          {palette.map((c) => (
-            <button
-              key={c}
-              type="button"
-              aria-label={`图标颜色${c}`}
-              aria-pressed={color === c}
-              style={{ background: c }}
-              onClick={() => setColor(c)}
-            >
-              {color === c && <Check size={14} />}
-            </button>
-          ))}
-        </div>
+        <ColorPicker label="图标颜色" value={color} onValueChange={setColor} presets={palette} disabled={busy || uploading} />
         <label className="upload-icon">
           <Upload size={14} /> 上传图标
           <input

@@ -14,13 +14,11 @@ export function CategoryIconPicker({ value, name, disabled, onChange }: { value:
   const id = useId();
   const close = () => { setOpen(false); };
   const [position, setPosition] = useState({ left: 8, top: 8, width: 400, maxHeight: 480 });
-  const [theme, setTheme] = useState('system');
   const saving = useRef(false);
   useLayoutEffect(() => {
     if (!open || !trigger.current || !panel.current) return;
     const button = trigger.current;
     const popup = panel.current;
-    setTheme(button.closest('[data-theme]')?.getAttribute('data-theme') ?? 'system');
     const place = () => {
       const rect = button.getBoundingClientRect();
       const viewport = window.visualViewport;
@@ -68,7 +66,7 @@ export function CategoryIconPicker({ value, name, disabled, onChange }: { value:
   }
   return <div className="category-icon-picker">
     <button ref={trigger} type="button" className="category-icon-trigger" disabled={disabled} aria-label={`分类图标：${name}`} aria-expanded={open} aria-controls={open ? id : undefined} onClick={() => setOpen(!open)}><CategoryIcon symbol={value} /><span>选择图标</span></button>
-    {open && createPortal(<div ref={panel} id={id} className="category-icon-panel category-icon-popover" data-theme={theme} style={position} role="dialog" aria-label={`${name}图标选择器`} onKeyDown={event => {
+    {open && createPortal(<div ref={panel} id={id} className="category-icon-panel category-icon-popover" style={position} role="dialog" aria-label={`${name}图标选择器`} onKeyDown={event => {
       if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); close(); }
       if (event.key === 'Tab') {
         const nodes = [...event.currentTarget.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled)')].filter(node => node.getClientRects().length);

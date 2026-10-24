@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
+import { Blocks, Globe, ImagePlus, ShieldCheck } from 'lucide-react'
 import { defaults, type AppState, type LinkItem, type TileKey } from '../model'
 import { AnimatedOverlay } from './AnimatedOverlay'
 import { SiteIcon } from './SiteIcon'
@@ -31,6 +32,10 @@ export function AddIconPanel({ state, active, folder, onClose, onLink, onWidget,
   const [failed, setFailed] = useState(false)
   const [pending, setPending] = useState(false)
   const pluginInput = useRef<HTMLInputElement>(null)
+  const contentRef = useRef<HTMLDivElement>(null)
+  useLayoutEffect(() => { if (contentRef.current) contentRef.current.scrollTop = 0 }, [page])
+  const PageIcon = page === '小组件' ? Blocks : page === '网址导航' ? Globe : ImagePlus
+  const description = page === '小组件' ? '挑选实用的小组件，让日常信息触手可及。' : page === '网址导航' ? '收藏常用的网站，打造顺手的网址导航。' : '自定义名称、网址与图标，添加专属快捷入口。'
   const [, refresh] = useState(0)
   const [siteAdded, setSiteAdded] = useState<Record<string, boolean>>({})
   useEffect(() => {
@@ -53,9 +58,9 @@ export function AddIconPanel({ state, active, folder, onClose, onLink, onWidget,
     finally { setPending(false) }
   }
   return <AnimatedOverlay open onClose={onClose} label="添加图标" className="add-icon-panel">
-    <aside className="add-icon-nav"><h2>添加图标</h2><p>让桌面更适合你</p><nav aria-label="添加图标类型">{pages.map(name => <button type="button" key={name} aria-pressed={page === name} onClick={() => { setPage(name); setSearch(''); setFilter('全部'); setMessage('') }}>{name}</button>)}</nav><small>本地目录 · 无在线商城</small></aside>
-    <main className="add-icon-main"><header className="add-icon-header"><h2>{page}</h2><div className="add-icon-tools">{page !== '自定义图标' && <input type="search" aria-label="搜索当前目录" placeholder={page === '小组件' ? '搜索组件名称或用途' : '搜索网站名称或网址'} value={search} onChange={e => setSearch(e.target.value)} />}<label>添加到分类<Select label="添加到分类" theme={state.settings.theme} disabled={pending} value={targetCategory} onValueChange={value => { setCategory(value); setTarget(''); setMessage('') }} options={state.categories.map(c => ({ value: c.id, label: c.name }))} /></label>{page !== '小组件' && <label>文件夹<Select label="目标文件夹" theme={state.settings.theme} disabled={pending} value={targetFolder ?? ''} onValueChange={value => { setTarget(value); setMessage('') }} options={[{ value: '', label: '分类桌面' }, ...state.folders.filter(f => f.category === targetCategory).map(f => ({ value: f.id, label: f.name }))]} /></label>}</div></header>
-      <div className="add-icon-content">{message && <p className={`add-icon-feedback ${failed ? 'is-error' : ''}`} role={failed ? 'alert' : 'status'}>{message}</p>}
+    <aside className="add-icon-nav"><nav aria-label="添加图标类型">{pages.map(name => <button type="button" key={name} aria-pressed={page === name} onClick={() => { setPage(name); setSearch(''); setFilter('全部'); setMessage('') }}>{name}</button>)}</nav></aside>
+    <main className="add-icon-main"><header className="add-icon-header"><span className="modal-icon"><PageIcon /></span><div><h2>{page}</h2><p>{description}</p></div></header><div className="add-icon-tools">{page !== '自定义图标' && <input type="search" aria-label="搜索当前目录" placeholder={page === '小组件' ? '搜索组件名称或用途' : '搜索网站名称或网址'} value={search} onChange={e => setSearch(e.target.value)} />}<label>添加到分类<Select label="添加到分类" theme={state.settings.theme} disabled={pending} value={targetCategory} onValueChange={value => { setCategory(value); setTarget(''); setMessage('') }} options={state.categories.map(c => ({ value: c.id, label: c.name }))} /></label>{page !== '小组件' && <label>文件夹<Select label="目标文件夹" theme={state.settings.theme} disabled={pending} value={targetFolder ?? ''} onValueChange={value => { setTarget(value); setMessage('') }} options={[{ value: '', label: '分类桌面' }, ...state.folders.filter(f => f.category === targetCategory).map(f => ({ value: f.id, label: f.name }))]} /></label>}</div>
+      <div className="add-icon-content" ref={contentRef} aria-busy={pending}>
       {page !== '自定义图标' && <div className="add-icon-filters" aria-label="目录分类">{(page === '小组件' ? ['全部', '内置组件', '本地插件'] : ['全部', '工作效率', '设计灵感', '影音生活', '阅读社区']).map(name => <button type="button" key={name} aria-pressed={filter === name} onClick={() => setFilter(name)}>{name}</button>)}</div>}
       {page === '小组件' && <><p className="add-icon-hint">组件只添加到分类桌面，不放入文件夹。内容在所有分类共享，同一分类不重复添加。</p><div className="add-icon-cards">{widgets.map(w => {
         const added = state.settings.showWidgets && !!state.layouts?.[targetCategory]?.order.includes(w.key) && !state.layouts[targetCategory].hidden.includes(w.key)
@@ -69,6 +74,7 @@ export function AddIconPanel({ state, active, folder, onClose, onLink, onWidget,
       })}</div>{sites.length === 0 && <p className="add-icon-empty">没有匹配的网站，可前往“自定义图标”添加。</p>}</>}
       {page === '自定义图标' && <div className="add-icon-custom">{renderCustom(targetCategory, targetFolder)}</div>}
       </div>
+      <footer className={`add-icon-bottom ${failed ? 'is-error' : ''}`}><ShieldCheck size={14} aria-hidden="true" /><span role={failed ? 'alert' : 'status'}>{message || '添加后自动保存于此设备'}</span></footer>
     </main>
   </AnimatedOverlay>
 }

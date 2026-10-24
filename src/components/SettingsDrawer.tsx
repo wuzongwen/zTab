@@ -1,8 +1,14 @@
+import { useLayoutEffect, useRef } from 'react';
 import { Settings, Check, Upload, Trash2, Download, ShieldCheck, CloudOff } from "lucide-react";
 import { defaults, safeUrl, uid, type AppState } from "../model";
 import { readImage } from "../storage";
-import { SettingsPanel, settingGroups } from "./SettingsPanel";
+import { SettingsPanel, settingGroups, rangeStyle } from "./SettingsPanel";
+import { Switch } from './Switch';
 export function SettingsDrawer({state,tab,setTab,busy,storageFailed,updateSettings,commit,tell,exportData,importData,reset}: { state:AppState; tab:string; setTab:(s:string)=>void; busy:boolean; storageFailed:boolean; updateSettings:(p:Partial<AppState["settings"]>)=>Promise<boolean>; commit:(s:AppState)=>Promise<boolean>; tell:(s:string)=>void; exportData:()=>void; importData:(f:File)=>void; reset:()=>void }) {
+const contentRef = useRef<HTMLDivElement>(null);
+useLayoutEffect(() => {
+  if (contentRef.current) contentRef.current.scrollTop = 0;
+}, [tab]);
 const engine=state.engines.find(e=>e.id===state.settings.engine) ?? state.engines[0];
 return <div className="settings-shell">
                 <div className="settings-title">
@@ -14,17 +20,21 @@ return <div className="settings-shell">
                     <p className="muted">简单设置，创造属于自己的舒适区。</p>
                   </div>
                 </div>
-                <div className="settings-tabs">
+                <nav className="settings-tabs" aria-label="设置分组">
                   {settingGroups.map(([id, label]) => (
                     <button
                       className={tab === id ? "active" : ""}
                       key={id}
+                      type="button"
+                      aria-current={tab === id ? 'page' : undefined}
+                      aria-controls="settings-scroll-content"
                       onClick={() => setTab(id)}
                     >
                       {label}
                     </button>
                   ))}
-                </div>
+                </nav>
+                <div className="settings-scroll" id="settings-scroll-content" ref={contentRef}>
                 <SettingsPanel settings={state.settings} group={tab} update={updateSettings} />
                 {tab === "reset" && <div className="settings-card"><button disabled={busy} onClick={() => { if (confirm("仅重置设置，保留网站分类和组件？")) void updateSettings({...defaults().settings, engine: state.engines[0].id}); }}>仅重置设置</button><button disabled={busy} onClick={reset}>清空并恢复初始桌面</button></div>}
                 {tab === "theme" && (
@@ -78,6 +88,7 @@ return <div className="settings-shell">
                         type="range"
                         min="0"
                         max="60"
+                        style={rangeStyle(state.settings.dim, 0, 60)}
                         value={state.settings.dim}
                         onChange={(e) =>
                           updateSettings({ dim: Number(e.target.value) })
@@ -93,6 +104,7 @@ return <div className="settings-shell">
                         type="range"
                         min="4"
                         max="20"
+                        style={rangeStyle(state.settings.columns, 4, 20)}
                         value={state.settings.columns}
                         onChange={(e) =>
                           updateSettings({ columns: Number(e.target.value) })
@@ -106,6 +118,7 @@ return <div className="settings-shell">
                         type="range"
                         min="42"
                         max="80"
+                        style={rangeStyle(state.settings.size, 42, 80)}
                         value={state.settings.size}
                         onChange={(e) =>
                           updateSettings({ size: Number(e.target.value) })
@@ -114,24 +127,9 @@ return <div className="settings-shell">
                     </label>
                     <label className="toggle-field">
                       显示桌面小组件
-                      <input
-                        type="checkbox"
+                      <Switch
                         checked={state.settings.showWidgets}
-                        onChange={(e) =>
-                          updateSettings({ showWidgets: e.target.checked })
-                        }
-                      />
-                    </label>
-                    <label className="field">
-                      桌面寄语
-                      <input
-                        maxLength={100}
-                        defaultValue={state.settings.greeting}
-                        key={state.settings.greeting}
-                        onBlur={(e) => {
-                          if (e.target.value !== state.settings.greeting)
-                            updateSettings({ greeting: e.target.value });
-                        }}
+                        onCheckedChange={checked => void updateSettings({ showWidgets: checked })}
                       />
                     </label>
 </div>}
@@ -292,7 +290,8 @@ return <div className="settings-shell">
                     </div>
                   </div>
                 )}
-                <div className="settings-bottom">
+                </div>
+                <div className="settings-bottom" role="status">
                   <ShieldCheck size={13} />{" "}
                   {busy
                     ? "正在安全保存…"

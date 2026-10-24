@@ -1,0 +1,19 @@
+.sidebar-settings { border-radius:20px; background:var(--panel-bg,#fff); color:var(--text); overflow:hidden; }
+.sidebar-position-choices { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:18px; padding:20px; }
+.sidebar-position-choice { display:flex; flex-direction:column; align-items:center; gap:12px; padding:14px; border:2px solid var(--border); border-radius:16px; background:var(--input-bg,#f5f6f8); color:var(--text); cursor:pointer; }
+.sidebar-position-choice[aria-pressed=true] { border-color:var(--accent); background:color-mix(in srgb,var(--accent) 6%,var(--panel-bg,#fff)); }
+.sidebar-position-tag { padding:4px 16px; border-radius:999px; font-size:12px; background:color-mix(in srgb,var(--text) 7%,transparent); }
+.sidebar-position-choice[aria-pressed=true] .sidebar-position-tag { color:#fff; background:var(--accent); }
+.sidebar-position-preview { position:relative; display:block; width:100%; height:86px; border-radius:9px; background:color-mix(in srgb,var(--accent) 9%,var(--input-bg,#eee)); overflow:hidden; }
+.sidebar-preview-rail { position:absolute; top:9px; bottom:9px; left:8px; width:17px; border-radius:6px; background:color-mix(in srgb,var(--accent) 22%,var(--panel-bg,#fff)); display:flex; flex-direction:column; align-items:center; gap:7px; padding-top:9px; }
+.sidebar-preview-rail b { width:6px; height:6px; border-radius:2px; background:var(--accent); opacity:.7; }
+.sidebar-preview-right .sidebar-preview-rail { left:auto; right:8px; }
+.sidebar-preview-content { position:absolute; inset:25px 30px 20px 42px; display:grid; grid-template-columns:repeat(2,1fr); gap:8px; }
+.sidebar-preview-right .sidebar-preview-content { left:30px; right:42px; }
+.sidebar-preview-content b { background:color-mix(in srgb,var(--accent) 28%,var(--panel-bg,#fff)); border-radius:5px; }
+.sidebar-settings-section { padding:12px 22px; border-top:1px solid var(--border); }
+.sidebar-settings .toggle-field { display:flex; justify-content:space-between; align-items:center; gap:16px; min-height:52px; margin:0; }
+.sidebar-settings .range-field { display:grid; grid-template-columns:1fr auto; align-items:center; gap:14px; margin:12px 0 20px; }
+.sidebar-settings .range-field > span { font-variant-numeric:tabular-nums; color:var(--muted); }
+.sidebar-settings .range-field > input { grid-column:1 / -1; width:100%; }
+.sidebar-settings-hint { color:var(--muted); font-size:12px; line-height:1.6; margin:2px 0 10px; }

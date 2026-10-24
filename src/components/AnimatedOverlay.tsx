@@ -7,7 +7,6 @@ const layers: HTMLElement[] = []
 const topLayer = () => [...layers].reverse().find(element => !element.parentElement?.inert)
 let scrollLocks = 0
 let previousOverflow = ''
-let previousGutter = ''
 
 export function AnimatedOverlay({ open, onClose, label, id, variant = 'widget', className = '', children }: {
   open: boolean
@@ -63,8 +62,6 @@ export function AnimatedOverlay({ open, onClose, label, id, variant = 'widget', 
     layers.push(element)
     if (scrollLocks++ === 0) {
       previousOverflow = document.body.style.overflow
-      previousGutter = document.documentElement.style.scrollbarGutter
-      document.documentElement.style.scrollbarGutter = 'stable'
       document.body.style.overflow = 'hidden'
     }
     element.focus({ preventScroll: true })
@@ -95,7 +92,6 @@ export function AnimatedOverlay({ open, onClose, label, id, variant = 'widget', 
       layers.splice(layers.indexOf(element), 1)
       if (--scrollLocks === 0) {
         document.body.style.overflow = previousOverflow
-        document.documentElement.style.scrollbarGutter = previousGutter
       }
       document.removeEventListener('keydown', keydown)
       document.removeEventListener('focusin', focusin)
