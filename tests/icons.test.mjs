@@ -396,7 +396,7 @@ test('stationary frame hits never arm grouping and release revalidates the targe
 
 test('nested editors and menus escape the desktop stacking context', () => {
   assert.match(app, /siteMenu && createPortal\(/);
-  assert.match(app, /modal && createPortal\(/);
+  assert.match(app, /modal && modal !== 'settings' && createPortal\(/);
   assert.match(app, /document.addEventListener\('keydown', keydown, true\)/);
   assert.match(app, /returnFocus\?\.focus|returnFocus.focus\(\{ preventScroll: true \}\)/);
   assert.match(app, /folder-dialog-body/);

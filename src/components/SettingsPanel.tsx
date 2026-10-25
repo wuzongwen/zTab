@@ -10,7 +10,7 @@ export function rangeStyle(value: number, min: number, max: number): CSSProperti
   const progress = max > min ? Math.max(0, Math.min(100, (value - min) / (max - min) * 100)) : 0;
   return { '--range-progress': `${progress}%` } as CSSProperties;
 }
-export const settingGroups = [['opening','打开方式'],['search','搜索栏'],['icons','图标'],['time','时间/日期'],['theme','主题/壁纸'],['layout','布局'],['sidebar','侧边栏'],['backup','备份与恢复'],['reset','重置设置'],['about','关于']];
+export const settingGroups = [['search','搜索栏'],['icons','图标'],['time','时间/日期'],['theme','主题/壁纸'],['layout','布局'],['sidebar','侧边栏'],['backup','备份与恢复'],['reset','重置设置'],['about','关于']];
 export function SettingsPanel({settings:p,group,update}: {settings: AppState['settings']; group:string; update:(patch:Partial<AppState['settings']>)=>Promise<boolean>}) {
 const systemDark = useSystemDark();
 const toggle = (key:keyof typeof p,label:string) => <label className="toggle-field" key={key}>{label}<Switch checked={p[key] as boolean} onCheckedChange={checked=>void update({[key]:checked})}/></label>;
@@ -18,8 +18,7 @@ const range = (key:keyof typeof p,label:string,min:number,max:number) => <label 
 const color = (key:'accent'|'nameColor'|'timeColor',label:string) => <div className="color-field" key={key}><span>{label}</span><ColorPicker label={label} value={p[key]} onValueChange={value=>void update({[key]:value})}/></div>;
 const select = (key:'theme'|'mode'|'sidebarPosition'|'categoryTransition',label:string,options:string[][]) => <label className="field">{label}<Select label={label} theme={p.theme} value={p[key]} onValueChange={value=>void update({[key]:value})} options={options.map(([value,label])=>({value,label}))} /></label>;
 return <div className="settings-card">
-{group==='opening' && <>{toggle('searchNewTab','在新标签页打开搜索结果')}{toggle('siteNewTab','在新标签页打开网站')}</>}
-{group==='search' && <>{toggle('showSearch','显示搜索栏')}{toggle('searchHistoryEnabled','记录搜索历史')}<p>仅本机保存最近30条搜索词，不随完整备份导出。关闭后停止记录并隐藏，原记录保留；重新开启可恢复。</p><SearchHistoryControls />{range('searchHeight','搜索栏高度',32,80)}{range('searchRadius','搜索栏圆角',0,40)}{range('searchOpacity','搜索栏不透明度',10,100)}</>}
+{group==='search' && <>{toggle('showSearch','显示搜索栏')}{toggle('searchNewTab','在新标签页打开搜索结果')}{toggle('searchHistoryEnabled','记录搜索历史')}<p>仅本机保存最近30条搜索词，不随完整备份导出。关闭后停止记录并隐藏，原记录保留；重新开启可恢复。</p><SearchHistoryControls />{range('searchHeight','搜索栏高度',32,80)}{range('searchRadius','搜索栏圆角',0,40)}{range('searchOpacity','搜索栏不透明度',10,100)}</>}
 {group==='icons' && <>{range('size','图标大小',42,80)}{range('iconRadius','图标圆角',0,40)}{range('iconOpacity','图标不透明度',10,100)}{range('iconGap','图标间距',0,60)}{toggle('showNames','显示名称')}{range('nameSize','名称字号',10,24)}{color('nameColor','名称颜色')}</>}
 {group==='time' && <>{toggle('showTime','显示时间')}{toggle('showDate','显示日期')}{toggle('showWeek','显示星期')}{toggle('showLunar','显示农历')}{toggle('hour12','12小时制')}{toggle('showSeconds','显示秒')}{range('timeSize','时间字号',32,120)}{range('timeWeight','时间字重',100,900)}{color('timeColor','时间颜色')}</>}
 {group==='theme' && <><div className="theme-choices" role="group" aria-label="主题">{(['light','dark','system'] as const).map(theme => <button type="button" key={theme} className="theme-choice" aria-pressed={p.theme === theme} onClick={() => void update({ theme })}><span className={`theme-preview preview-${theme}`} aria-hidden="true"><i /><i /><i /></span><strong>{theme === 'light' ? '浅色' : theme === 'dark' ? '深色' : '跟随系统'}</strong><small>{theme === 'system' ? `当前实际：${resolveTheme(theme, systemDark) === 'dark' ? '深色' : '浅色'}` : p.theme === theme ? '已选择' : '点击预览'}</small></button>)}</div>{color('accent','主题色')}{range('blur','壁纸模糊',0,30)}</>}

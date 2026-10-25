@@ -8,9 +8,10 @@ const topLayer = () => [...layers].reverse().find(element => !element.parentElem
 let scrollLocks = 0
 let previousOverflow = ''
 
-export function AnimatedOverlay({ open, onClose, label, id, variant = 'widget', className = '', children }: {
+export function AnimatedOverlay({ open, onClose, closeDisabled = false, label, id, variant = 'widget', className = '', children }: {
   open: boolean
   onClose: () => void
+  closeDisabled?: boolean
   label: string
   id?: string
   variant?: 'folder' | 'widget'
@@ -24,7 +25,7 @@ export function AnimatedOverlay({ open, onClose, label, id, variant = 'widget', 
   const enterNextFrame = useRef(0)
   const exitTimer = useRef(0)
   const close = useRef(onClose)
-  close.current = onClose
+  close.current = closeDisabled ? () => {} : onClose
 
   useLayoutEffect(() => {
     const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches
@@ -107,7 +108,7 @@ export function AnimatedOverlay({ open, onClose, label, id, variant = 'widget', 
     if (event.target === event.currentTarget) close.current()
   }}>
     <div ref={panel} id={id} className={`animated-overlay-panel ${className}`} role="dialog" aria-modal="true" aria-label={label} tabIndex={-1}>
-      <button type="button" className="animated-overlay-close" aria-label={`关闭${label}`} onClick={onClose}><X size={21} /></button>
+      <button type="button" className="animated-overlay-close" aria-label={`关闭${label}`} disabled={closeDisabled} onClick={onClose}><X size={21} /></button>
       {children}
     </div>
   </div>, document.body)

@@ -117,6 +117,29 @@ test('legacy settings migrate independently and invalid new values are rejected'
   const backup = {format:'ztab',version:1,data:migrated,widgets:null};
   assert.deepEqual(parseBackup(JSON.stringify(backup)).data.settings,migrated.settings);
 });
+test('per-link opening preferences are optional booleans and survive backups without changing legacy settings', () => {
+  for (const global of [true, false]) for (const newTab of [undefined, true, false]) {
+    const state = defaults();
+    state.settings.siteNewTab = global;
+    if (newTab !== undefined) state.links[0].newTab = newTab;
+    const original = JSON.stringify(state);
+    const validated = validateState(state);
+    const restored = parseBackup(JSON.stringify({ format: 'ztab', version: 1, data: state, widgets: null })).data;
+    for (const result of [validated, restored]) {
+      assert.equal(result.links[0].newTab, newTab);
+      assert.equal(result.settings.siteNewTab, global);
+      assert.equal(result.links[1].newTab, undefined);
+    }
+    assert.equal(JSON.stringify(state), original);
+  }
+  for (const newTab of [null, 'true', 'false', 0, 1, [], {}]) {
+    const state = defaults();
+    state.links[0].newTab = newTab;
+    assert.throws(() => validateState(state));
+    assert.throws(() => parseBackup(JSON.stringify({ format: 'ztab', version: 1, data: state, widgets: null })));
+  }
+});
+
 test('category transitions validate, migrate and survive backup roundtrip', () => {
   assert.equal(defaults().settings.categoryTransition, 'fade');
   const legacy = defaults();

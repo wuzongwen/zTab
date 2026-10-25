@@ -6,6 +6,7 @@ export interface LinkItem {
   icon?: string;
   category: string;
   folder?: string;
+  newTab?: boolean;
 }
 export interface Category {
   id: string;
@@ -176,6 +177,7 @@ export function validateState(input: unknown): AppState {
       !cats.has(l.category) ||
       !/^#[\da-fA-F]{6}$/.test(l.color) ||
       (l.icon !== undefined && !(text(l.icon, 8) || imageValid(l.icon))) ||
+      (l.newTab !== undefined && typeof l.newTab !== 'boolean') ||
       (l.folder !== undefined &&
         !s.folders.some((f) => f.id === l.folder && f.category === l.category))
     )

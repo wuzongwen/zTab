@@ -41,12 +41,12 @@ test('settings dialog contains scrolling content and resets only its scroll on g
   const React = { createElement: (type, props, ...children) => ({ type, props: props ?? {}, children: children.flat(Infinity) }) };
   vm.runInNewContext(ts.transpileModule(drawer.replace(/^import .*$/gm, ''), { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.React } }).outputText, {
     exports: mod.exports, React, useRef: () => ({ current: content }), useLayoutEffect: (effect, deps) => effects.push({ effect, deps }),
-    Settings: 'svg', ShieldCheck: 'svg', SettingsPanel: 'SettingsPanel', settingGroups: [['opening', '打开方式'], ['about', '关于']],
+    Settings: 'svg', ShieldCheck: 'svg', Check: 'svg', Trash2: 'svg', SettingsPanel: 'SettingsPanel', settingGroups: [['search', '搜索栏'], ['about', '关于']],
   });
   const nodes = tree => [tree, ...tree.children.filter(node => node && typeof node === 'object').flatMap(nodes)];
   const groups = [];
   const render = tab => mod.exports.SettingsDrawer({ state: { engines: [{ id: 'e' }], settings: { engine: 'e' } }, tab, setTab: id => groups.push(id) });
-  const tree = render('opening');
+  const tree = render('search');
   const scroll = nodes(tree).find(node => node.props.className === 'settings-scroll');
   assert.ok(nodes(scroll).some(node => node.type === 'SettingsPanel'));
   assert.ok(!nodes(scroll).some(node => node.props.className === 'settings-bottom'));
@@ -72,6 +72,143 @@ test('settings dialog contains scrolling content and resets only its scroll on g
   assert.match(app, /e.target === e.currentTarget && !busy/);
 });
 
+test('opening settings move to search and custom icons without leaving an empty default tab', async () => {
+  const source = await readFile(new URL('../src/components/SettingsPanel.tsx', import.meta.url), 'utf8');
+  const app = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const mod = { exports: {} };
+  const React = { createElement: (type, props, ...children) => ({ type, props: props ?? {}, children: children.flat(Infinity) }) };
+  vm.runInNewContext(ts.transpileModule(source.replace(/^import .*$/gm, ''), { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.React } }).outputText, {
+    exports: mod.exports, React, useSystemDark: () => false, Switch: 'Switch', SearchHistoryControls: 'SearchHistoryControls',
+  });
+  const nodes = tree => [tree, ...tree.children.filter(node => node && typeof node === 'object').flatMap(nodes)];
+  const updates = [];
+  const tree = mod.exports.SettingsPanel({ settings: { searchNewTab: false }, group: 'search', update: patch => updates.push(patch) });
+  const toggle = nodes(tree).find(node => node.props.key === 'searchNewTab');
+  assert.ok(toggle.children.includes('在新标签页打开搜索结果'));
+  const control = nodes(toggle).find(node => node.type === 'Switch');
+  assert.equal(control.props.checked, false);
+  control.props.onCheckedChange(true);
+  assert.equal(updates[0].searchNewTab, true);
+  assert.ok(!mod.exports.settingGroups.some(([id]) => id === 'opening'));
+  assert.equal(mod.exports.settingGroups[0][0], 'search');
+  assert.doesNotMatch(source, /toggle\('siteNewTab'/);
+  assert.match(app, /\[tab, setTab\] = useState\("search"\)/);
+});
+
+test('icon editor initializes and saves individual opening preferences without changing other links', async () => {
+  const app = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const source = app.slice(app.indexOf('function LinkEditor('));
+  const nodes = tree => [tree, ...tree.children.filter(node => node && typeof node === 'object').flatMap(nodes)];
+  for (const global of [true, false]) for (const preference of [undefined, true, false]) for (const editing of [false, true]) {
+    const values = [];
+    let hook = 0;
+    const errors = [], saved = [];
+    let succeeds = true;
+    const state = { settings: { siteNewTab: global }, categories: [{ id: 'daily', name: '日常' }], folders: [], links: [{ id: 'other', newTab: !global }] };
+    const item = editing ? { id: 'edited', title: '网站', url: 'https://example.com/', category: 'daily', color: '#ffffff', newTab: preference } : undefined;
+    const original = JSON.stringify({ state, item });
+    const context = vm.createContext({
+      React: { createElement: (type, props, ...children) => ({ type, props: props ?? {}, children: children.flat(Infinity) }) },
+      useState(initial) { const index = hook++; if (!(index in values)) values[index] = initial; return [values[index], value => { values[index] = value; }]; },
+      defaults: () => ({ links: [] }), palette: ['#ffffff'], LinkIcon: 'svg', Select: 'Select', Switch: 'Switch', SiteIcon: 'SiteIcon', ColorPicker: 'ColorPicker', Upload: 'svg',
+      FormData: class { get(name) { return name === 'title' ? '新网站' : 'https://example.com/'; } }, safeUrl: value => value, uid: () => 'new-link',
+    });
+    vm.runInContext(ts.transpileModule(source, { compilerOptions: { jsx: ts.JsxEmit.React } }).outputText, context);
+    const render = (busy = false) => { hook = 0; return context.LinkEditor({ state, item, active: 'daily', busy, continuous: true, onError: error => errors.push(error), onSave: async (link, keepOpen) => { saved.push({ link, keepOpen }); return succeeds; } }); };
+    let tree = render();
+    const control = () => nodes(tree).find(node => node.type === 'Switch');
+    const initial = item?.newTab ?? global;
+    assert.equal(control().props.checked, initial);
+    assert.equal(saved.length, 0);
+    const submit = keepOpen => tree.props.onSubmit({ preventDefault() {}, nativeEvent: { submitter: { getAttribute: () => keepOpen ? 'continue' : null } } });
+    await submit(false);
+    assert.equal(saved[0].link.newTab, initial);
+    assert.equal(saved[0].link.id, editing ? 'edited' : 'new-link');
+    control().props.onCheckedChange(!initial);
+    tree = render();
+    await submit(true);
+    assert.equal(saved[1].link.newTab, !initial);
+    assert.equal(saved[1].keepOpen, true);
+    tree = render();
+    assert.equal(control().props.checked, !initial);
+    assert.equal(nodes(tree).find(node => node.props.name === 'title').props.value, '');
+    nodes(tree).find(node => node.props.name === 'title').props.onChange({ target: { value: '失败后保留' } });
+    succeeds = false;
+    await submit(true);
+    tree = render();
+    assert.equal(nodes(tree).find(node => node.props.name === 'title').props.value, '失败后保留');
+    tree = render(true);
+    assert.equal(control().props.disabled, true);
+    assert.equal(JSON.stringify({ state, item }), original);
+    assert.deepEqual(errors, []);
+  }
+});
+
+test('desktop and folder links apply per-icon targets and retain the legacy fallback', async () => {
+  const app = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const source = app.slice(app.indexOf('  function renderLinks('), app.indexOf('  useEffect(() => {', app.indexOf('  function renderLinks(')));
+  const nodes = tree => [tree, ...tree.children.filter(node => node && typeof node === 'object').flatMap(nodes)];
+  for (const global of [true, false]) for (const newTab of [undefined, true, false]) for (const desktop of [true, false]) {
+    const context = vm.createContext({
+      React: { createElement: (type, props, ...children) => ({ type, props: props ?? {}, children: children.flat(Infinity) }) },
+      state: { settings: { siteNewTab: global } }, manage: false, tileStyle: () => ({}), SiteIcon: 'SiteIcon',
+    });
+    vm.runInContext(ts.transpileModule(source, { compilerOptions: { jsx: ts.JsxEmit.React } }).outputText, context);
+    const [tree] = context.renderLinks([{ id: 'link', title: '网站', url: 'https://example.com/', newTab }], {}, desktop);
+    const anchor = nodes(tree).find(node => node.type === 'a');
+    assert.equal(anchor.props.target, (newTab ?? global) ? '_blank' : '_self');
+    assert.equal(anchor.props.rel, 'noopener noreferrer');
+  }
+});
+
+test('settings reuse the add-icon overlay backdrop and full transition lifecycle', async () => {
+  const app = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const addIcon = await readFile(new URL('../src/components/AddIconPanel.tsx', import.meta.url), 'utf8');
+  const overlay = await readFile(new URL('../src/components/AnimatedOverlay.tsx', import.meta.url), 'utf8');
+  const css = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');
+  assert.match(app, /<AnimatedOverlay open=\{modal === 'settings'\}[^\n]*closeDisabled=\{busy\}[^\n]*className="modal settings-modal">\s*<SettingsDrawer/);
+  assert.match(app, /modal && modal !== 'settings' && createPortal/);
+  assert.match(app, /if \(!modal \|\| modal === 'settings'\) return/);
+  assert.match(addIcon, /<AnimatedOverlay open onClose=\{onClose\}/);
+  assert.match(overlay, /setTimeout\(\(\) => setPresent\(false\), 300\)/);
+  assert.match(css, /\.animated-overlay \{[^}]*background: rgb\(0 0 0 \/ 50%\);[^}]*transition: opacity 300ms ease/);
+  assert.match(css, /\.animated-overlay-panel \{[^}]*transform: translateY\(-20px\);[^}]*transition: transform 300ms ease/);
+  assert.match(css, /\.modal:not\(\.animated-overlay-panel\)[^}]*transition: background-color/);
+  assert.doesNotMatch(css, /settings-in/);
+});
+
+test('shared overlay blocks all dismissal paths while settings are saving', async () => {
+  const source = await readFile(new URL('../src/components/AnimatedOverlay.tsx', import.meta.url), 'utf8');
+  const mod = { exports: {} };
+  const React = { createElement: (type, props, ...children) => ({ type, props: props ?? {}, children }) };
+  const listeners = new Map();
+  let refs = [], effects = [], closed = 0;
+  const element = { focus() {}, contains: () => false };
+  const document = { body: { style: { overflow: '' } }, querySelector: () => null,
+    addEventListener: (name, handler) => listeners.set(name, handler), removeEventListener: name => listeners.delete(name) };
+  vm.runInNewContext(ts.transpileModule(source.replace(/^import .*$/gm, ''), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.React },
+  }).outputText, {
+    exports: mod.exports, React, X: 'svg', document, createPortal: tree => tree,
+    useState: value => [value, () => {}], useRef: value => ({ current: refs.shift() ?? value }),
+    useLayoutEffect() {}, useEffect: effect => effects.push(effect), dismissSelectOnEscape: () => false,
+    window: { matchMedia: () => ({ addEventListener() {}, removeEventListener() {} }) },
+  });
+  for (const disabled of [true, false]) {
+    refs = [element]; effects = [];
+    const tree = mod.exports.AnimatedOverlay({ open: true, closeDisabled: disabled, label: '桌面设置', onClose: () => closed++ });
+    const cleanup = effects.map(effect => effect());
+    const before = closed;
+    tree.props.onPointerDown({ target: element, currentTarget: element });
+    listeners.get('keydown')({ key: 'Escape', preventDefault() {}, stopPropagation() {} });
+    assert.equal(closed - before, disabled ? 0 : 2);
+    assert.equal(tree.children[0].children[0].props.disabled, disabled);
+    cleanup.reverse().forEach(fn => fn?.());
+    assert.equal(document.body.style.overflow, '');
+    assert.equal(listeners.size, 0);
+  }
+});
+
 test('category wheel listener is opt-in and detached when disabled', async () => {
   const app = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
   const effect = app.slice(app.lastIndexOf('  useEffect(() => {', app.indexOf('    const onWheel =')), app.indexOf('  const background ='));
@@ -80,10 +217,78 @@ test('category wheel listener is opt-in and detached when disabled', async () =>
   for (const enabled of [false, true]) {
     const listeners = [];
     const body = effect.slice(effect.indexOf('{') + 1, effect.lastIndexOf('}, ['));
-    const cleanup = new Function('ready', 'state', 'document', ts.transpileModule(body, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText)(true, { settings: { wheelCategories: enabled } }, { addEventListener: (...args) => listeners.push(args), removeEventListener: (...args) => listeners.push(args) });
+    const cleanup = new Function('ready', 'state', 'document', 'wheelGesture', ts.transpileModule(body, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText)(true, { settings: { wheelCategories: enabled } }, { addEventListener: (...args) => listeners.push(args), removeEventListener: (...args) => listeners.push(args) }, { current: {} });
     assert.equal(listeners.length, enabled ? 1 : 0);
     if (enabled) { cleanup(); assert.equal(listeners.length, 2); assert.equal(listeners[0][1], listeners[1][1]); }
   }
+});
+
+test('category wheel treats inertia as one gesture and preserves excluded scrolling', async () => {
+  const app = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const effect = app.slice(app.lastIndexOf('  useEffect(() => {', app.indexOf('    const onWheel =')), app.indexOf('  const background ='));
+  const body = effect.slice(effect.indexOf('{') + 1, effect.lastIndexOf('}, ['));
+  let now = 0, handler;
+  const selected = [];
+  class Element { constructor(excluded = false, outside = false) { this.excluded = excluded; this.outside = outside; } closest(selector) { return selector === '.app' ? !this.outside : this.excluded; } }
+  const context = vm.createContext({ ready: true, state: { settings: { wheelCategories: true }, categories: ['a', 'b', 'c', 'd'].map(id => ({ id })) },
+    document: { addEventListener: (_name, fn) => { handler = fn; }, removeEventListener() {} }, window: { innerHeight: 800 }, Element,
+    wheelGesture: { current: { lastTime: -Infinity, distance: 0, locked: false } }, Date: { now: () => now },
+    modal: null, adding: false, folder: null, siteMenu: null, tileMenu: null, categoryMenu: null, busy: false, desktopDrag: {},
+    requestedCategory: { current: 'a' }, selectCategory(id) { selected.push(id); context.requestedCategory.current = id; },
+  });
+  vm.runInContext(`(() => { ${ts.transpileModule(body, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText} })()`, context);
+  const wheel = (deltaY, gap = 16, extra = {}) => { now += gap; let prevented = false; handler({ target: new Element(), deltaY, deltaX: 0, deltaMode: 0, preventDefault() { prevented = true; }, ...extra }); return prevented; };
+  assert.equal(wheel(30), true);
+  for (let i = 0; i < 100; i++) assert.equal(wheel(i < 20 ? 12 : 0.2), true);
+  assert.deepEqual(selected, ['b']);
+  wheel(-2); wheel(-10);
+  assert.deepEqual(selected, ['b']);
+  wheel(30, 201);
+  assert.deepEqual(selected, ['b', 'c']);
+  for (let i = 0; i < 6; i++) wheel(4, i ? 16 : 201);
+  assert.equal(selected.at(-1), 'd');
+  wheel(2, 201, { deltaMode: 1 });
+  assert.equal(selected.at(-1), 'a');
+  wheel(-1, 201, { deltaMode: 2 });
+  assert.equal(selected.at(-1), 'd');
+  const count = selected.length;
+  for (const extra of [{ target: new Element(true) }, { target: new Element(false, true) }, { ctrlKey: true }, { metaKey: true }, { defaultPrevented: true }, { deltaX: 50 }]) assert.equal(wheel(30, 201, extra), false);
+  for (const flag of ['modal', 'adding', 'folder', 'siteMenu', 'tileMenu', 'categoryMenu', 'busy']) { context[flag] = true; assert.equal(wheel(30, 201), false); context[flag] = false; }
+  context.desktopDrag.dragging = 'link'; assert.equal(wheel(30, 201), false);
+  assert.equal(selected.length, count);
+});
+
+test('category animations resume their visual state and ignore superseded completions', async () => {
+  const app = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const helper = app.slice(app.indexOf('function categoryFrames'), app.indexOf('type Modal ='));
+  const functions = app.slice(app.indexOf('  function cancelCategoryAnimation('), app.indexOf('  useLayoutEffect(() => {', app.indexOf('  function selectCategory(')));
+  const animations = [], committed = [];
+  const sample = { opacity: '0.35', transform: 'matrix(1, 0, 0, 1, 0, -5)', filter: 'blur(2px)' };
+  const context = vm.createContext({ desktopDrag: {}, state: { categories: ['a', 'b', 'c'].map(id => ({ id })), settings: { categoryTransition: 'slide', categoryTransitionDuration: 1000 } },
+    active: 'a', requestedCategory: { current: 'a' }, transitionSequence: { current: 0 }, pendingEntrance: { current: null }, categoryAnimation: { current: null },
+    sectionRef: { current: { animate(frames, options) { let resolve; const animation = { frames, options, finished: new Promise(done => { resolve = done; }), finish() { resolve(); }, cancel() { this.cancelled = true; } }; animations.push(animation); return animation; } } },
+    window: { matchMedia: () => ({ matches: false }) }, getComputedStyle: () => sample, setFolder() {}, setActive: id => committed.push(id), setTransitionCommit() {},
+  });
+  vm.runInContext(ts.transpileModule(helper + functions, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText, context);
+  context.selectCategory('b');
+  context.selectCategory('b');
+  assert.equal(animations.length, 1);
+  assert.equal(animations[0].options.duration, 500);
+  context.selectCategory('c');
+  assert.equal(animations[0].cancelled, true);
+  assert.equal(animations[1].frames[0].opacity, sample.opacity);
+  assert.equal(animations[1].frames[0].transform, sample.transform);
+  context.selectCategory('a');
+  assert.equal(animations[2].frames[0].opacity, sample.opacity);
+  assert.equal(animations[2].frames[1].opacity, 1);
+  animations.forEach(animation => animation.finish());
+  await Promise.resolve(); await Promise.resolve();
+  assert.deepEqual(committed, []);
+  assert.equal(context.categoryAnimation.current, null);
+  context.selectCategory('b'); animations.at(-1).finish();
+  await Promise.resolve();
+  assert.deepEqual(committed, ['b']);
+  assert.equal(context.pendingEntrance.current.sequence, context.transitionSequence.current);
 });
 
 test('shared colors validate native and preset changes and stay controlled on rollback', async () => {

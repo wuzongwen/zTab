@@ -49,6 +49,7 @@ import { useTileDrag, reorderItems } from './useTileDrag';
 import "./styles.css";
 import { Select } from './components/Select';
 import { ColorPicker } from './components/ColorPicker';
+import { Switch } from './components/Switch';
 import { dismissSelectOnEscape, ownsFloatingTarget } from './components/selectLayers';
 
 function categoryFrames(effect: AppState['settings']['categoryTransition'], direction: number, entering: boolean): Keyframe[] {
@@ -78,7 +79,7 @@ export default function App() {
   const [storageFailed, setStorageFailed] = useState(false);
   const [active, setActive] = useState("daily");
   const [folder, setFolder] = useState<string>();
-  const wheelTime = useRef(0);
+  const wheelGesture = useRef({ lastTime: -Infinity, distance: 0, locked: false });
   const sectionRef = useRef<HTMLElement>(null);
   const requestedCategory = useRef(active);
   const transitionSequence = useRef(0);
@@ -100,22 +101,33 @@ export default function App() {
   function selectCategory(id: string, wheelDirection?: number) {
     if (desktopDrag.dragging || !state.categories.some(c => c.id === id)) return;
     const previous = requestedCategory.current;
+    if (id === previous) return;
+    const element = sectionRef.current;
+    const current = element && categoryAnimation.current ? getComputedStyle(element) : null;
+    const start = current ? { opacity: current.opacity, transform: current.transform, filter: current.filter } : null;
     cancelCategoryAnimation();
     requestedCategory.current = id;
     setFolder(undefined);
-    const element = sectionRef.current;
     const effect = state.settings.categoryTransition;
-    if (id === active || effect === 'none' || window.matchMedia('(prefers-reduced-motion: reduce)').matches || !element?.animate) {
+    if (effect === 'none' || window.matchMedia('(prefers-reduced-motion: reduce)').matches || !element?.animate) {
       setActive(id);
       return;
     }
     const direction = wheelDirection ?? (state.categories.findIndex(c => c.id === id) >= state.categories.findIndex(c => c.id === previous) ? 1 : -1);
     const sequence = transitionSequence.current;
     const duration = state.settings.categoryTransitionDuration / 2;
-    const animation = element.animate(categoryFrames(effect, direction, false), { duration, easing: 'ease-in', fill: 'forwards' });
+    const restoring = id === active;
+    const frames = restoring ? [start ?? { opacity: 1, transform: 'none', filter: 'blur(0px)' }, { opacity: 1, transform: 'none', filter: 'blur(0px)' }] : categoryFrames(effect, direction, false);
+    if (start) frames[0] = start;
+    const animation = element.animate(frames, { duration, easing: restoring ? 'ease-out' : 'ease-in', fill: 'forwards' });
     categoryAnimation.current = animation;
     void animation.finished.then(() => {
       if (sequence !== transitionSequence.current) return;
+      if (restoring) {
+        animation.cancel();
+        categoryAnimation.current = null;
+        return;
+      }
       pendingEntrance.current = { sequence, direction, effect, duration };
       setActive(id);
       setTransitionCommit(sequence);
@@ -161,7 +173,7 @@ export default function App() {
   const [notice, setNotice] = useState("");
   const [now, setNow] = useState(new Date());
   const [manage, setManage] = useState(false);
-  const [tab, setTab] = useState("opening");
+  const [tab, setTab] = useState("search");
   const [busy, setBusy] = useState(false);
   const [siteMenu, setSiteMenu] = useState<{ item: LinkItem; x: number; y: number }>();
   const [tileMenu, setTileMenu] = useState<{ key: TileKey | 'blank'; x: number; y: number; open?: () => void }>();
@@ -202,7 +214,7 @@ export default function App() {
   const modalBusy = useRef(busy);
   modalBusy.current = busy;
   useEffect(() => {
-    if (!modal) return;
+    if (!modal || modal === 'settings') return;
     const panel = document.querySelector<HTMLElement>('.modal-backdrop .modal');
     if (!panel) return;
     const returnFocus = document.querySelector<HTMLElement>('.animated-overlay.is-visible .animated-overlay-panel') ?? document.activeElement as HTMLElement | null;
@@ -556,9 +568,14 @@ export default function App() {
         }
       }}>
       <a className="site-icon" style={{ background: l.color, color: l.color === '#ffffff' || l.color === '#fff' ? '#252833' : 'white' }}
-        aria-label={`${manage ? '编辑' : '打开'}${l.title}`} href={l.url} draggable={false}
-        target={state.settings.siteNewTab ? '_blank' : '_self'} rel="noopener noreferrer"
-        onClick={event => { if (manage) { event.preventDefault(); openLink(l); } }}><SiteIcon item={l} /></a>
+        aria-label={`${manage ? '编辑' : '打开'}${l.title}`} role="link" tabIndex={0} draggable={false}
+        onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); event.currentTarget.click(); } }}
+        onClick={event => {
+          if (manage) { openLink(l); return; }
+          if (event.ctrlKey || event.metaKey || event.shiftKey || (l.newTab ?? state.settings.siteNewTab)) window.open(l.url, '_blank', 'noopener,noreferrer');
+          else window.location.assign(l.url);
+        }}
+        onAuxClick={event => { if (event.button === 1 && !manage) { event.preventDefault(); window.open(l.url, '_blank', 'noopener,noreferrer'); } }}><SiteIcon item={l} /></a>
       <span className="site-label">{l.title}</span>
       {manage && <div className="site-controls">
         <button aria-label={`编辑${l.title}`} onClick={() => openLink(l)}><Pencil size={11} /></button>
@@ -569,14 +586,24 @@ export default function App() {
     </div>);
   }
   useEffect(() => {
-    if (!ready || !state.settings.wheelCategories) return;
+    if (!ready || !state.settings.wheelCategories) {
+      wheelGesture.current = { lastTime: -Infinity, distance: 0, locked: false };
+      return;
+    }
     const onWheel = (event: WheelEvent) => {
       const target = event.target;
-      if (!(target instanceof Element) || !target.closest('.app') || target.closest('.search, input, textarea, select, [role="combobox"], [contenteditable="true"], .ztab-widget-card, .site-context-menu, .modal-backdrop, .animated-overlay') || modal || adding || folder || siteMenu || tileMenu || categoryMenu || busy || event.ctrlKey || event.metaKey || Math.abs(event.deltaY) < 5 || Math.abs(event.deltaX) > Math.abs(event.deltaY) || state.categories.length < 2) return;
+      const gesture = wheelGesture.current;
+      const now = Date.now();
+      if (now - gesture.lastTime >= 200) { gesture.distance = 0; gesture.locked = false; }
+      gesture.lastTime = now;
+      if (!(target instanceof Element) || !target.closest('.app') || target.closest('.search, input, textarea, select, [role="combobox"], [contenteditable="true"], .ztab-widget-card, .site-context-menu, .modal-backdrop, .animated-overlay') || modal || adding || folder || siteMenu || tileMenu || categoryMenu || busy || desktopDrag.dragging || event.defaultPrevented || event.ctrlKey || event.metaKey || !event.deltaY || Math.abs(event.deltaX) > Math.abs(event.deltaY) || state.categories.length < 2) return;
+      const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? window.innerHeight : 1;
+      gesture.distance += event.deltaY * unit;
+      if (!gesture.locked && Math.abs(gesture.distance) < 24) return;
       event.preventDefault();
-      if (Date.now() - wheelTime.current < 350) return;
-      wheelTime.current = Date.now();
-      const direction = event.deltaY > 0 ? 1 : -1;
+      if (gesture.locked) return;
+      gesture.locked = true;
+      const direction = gesture.distance > 0 ? 1 : -1;
       const index = Math.max(0, state.categories.findIndex(item => item.id === requestedCategory.current));
       selectCategory(state.categories[(index + direction + state.categories.length) % state.categories.length].id, direction);
     };
@@ -860,7 +887,10 @@ export default function App() {
           </button>
         </div>
       )}
-      {modal && createPortal(
+      <AnimatedOverlay open={modal === 'settings'} onClose={() => { if (!busy) setModal(null); }} closeDisabled={busy} label="桌面设置" className="modal settings-modal">
+        <SettingsDrawer {...{state,tab,setTab,busy,storageFailed,updateSettings,commit,tell,exportData,importData,reset}} />
+      </AnimatedOverlay>
+      {modal && modal !== 'settings' && createPortal(
         <div
           className="modal-backdrop"
           inert={!!deleting}
@@ -870,16 +900,10 @@ export default function App() {
         >
           <section
             data-theme={state.settings.theme}
-            className={`modal ${modal === "settings" ? "settings-modal" : modal === "category" ? "category-modal" : ""}`}
+            className={`modal ${modal === "category" ? "category-modal" : ""}`}
             role="dialog"
             aria-modal="true"
-            aria-label={
-              modal === "settings"
-                ? "桌面设置"
-                : modal === "link"
-                  ? "网站设置"
-                  : "分类与文件夹管理"
-            }
+            aria-label={modal === "link" ? "网站设置" : "分类与文件夹管理"}
           >
             <button
               className="modal-close"
@@ -1047,7 +1071,6 @@ export default function App() {
                 </div>
               </>
             )}
-            {modal === "settings" && <SettingsDrawer {...{state,tab,setTab,busy,storageFailed,updateSettings,commit,tell,exportData,importData,reset}} />}
           </section>
         </div>, document.body
       )}
@@ -1080,6 +1103,7 @@ function LinkEditor({
   const [color, setColor] = useState(item?.color ?? palette[0]);
   const [icon, setIcon] = useState(item?.icon ?? "");
   const [destination, setDestination] = useState(item?.folder ?? folder ?? "");
+  const [newTab, setNewTab] = useState(item?.newTab ?? state.settings.siteNewTab);
   return (
     <form
       onSubmit={async (e) => {
@@ -1097,6 +1121,7 @@ function LinkEditor({
             icon: icon || undefined,
             category,
             folder: destination || undefined,
+            newTab,
           }, keepOpen);
           if (ok && keepOpen) { setTitle(""); setUrl(""); setIcon(""); }
         } catch (err) {
@@ -1140,6 +1165,10 @@ function LinkEditor({
           onChange={(e) => setUrl(e.target.value)}
           placeholder="https://example.com"
         />
+      </label>
+      <label className="toggle-field">
+        在新标签页打开网站
+        <Switch checked={newTab} onCheckedChange={setNewTab} disabled={busy || uploading} />
       </label>
       <div className="field-row">
         <label className="field">

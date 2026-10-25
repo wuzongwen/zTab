@@ -36,7 +36,7 @@ export function SearchBar({ state, updateSettings, tell, context }: { state: App
   const sites = matchSites(state, query);
   const words = enabled ? history.filter(word => word.toLowerCase().includes(query.trim().toLowerCase())).slice(0, 8) : [];
   const actions = [
-    ...sites.map(hit => ({ label: hit.item.title, run: () => navigate(hit.item.url, state.settings.siteNewTab), hit })),
+    ...sites.map(hit => ({ label: hit.item.title, run: () => navigate(hit.item.url, hit.item.newTab ?? state.settings.siteNewTab), hit })),
     ...words.map(word => ({ label: word, run: () => search(word), word })),
     ...(query.trim() ? [{ label: `使用${engine.name}搜索“${query.trim()}”`, run: () => search(query) }] : []),
   ];

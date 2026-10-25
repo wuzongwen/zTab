@@ -179,6 +179,7 @@ button:hover {
 .sidebar-bottom button {
   width: 38px;
   height: 35px;
+  padding: 0;
   display: grid;
   place-items: center;
   border-radius: 9px;
@@ -1029,9 +1030,9 @@ button:hover {
 .settings-modal {
   width: 1000px; height: min(780px, calc(100dvh - 48px)); max-height: calc(100dvh - 48px);
   padding: 0; border-radius: 24px; overflow: hidden; background: #f3f5f8; border: 0;
-  animation: settings-in .18s ease-out;
 }
-@keyframes settings-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+.settings-modal .animated-overlay-close { top: 19px; right: 19px; width: 30px; height: 30px; background: transparent; }
+.settings-modal .animated-overlay-close:hover { background: var(--hover); }
 .settings-shell {
   height: 100%; min-height: 0; min-width: 0; display: grid;
   grid-template-columns: 180px minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr) auto;
@@ -1073,7 +1074,6 @@ button:hover {
   .settings-shell .settings-tabs button { padding: 8px 12px; }
   .settings-shell .settings-bottom { padding: 9px 0; }
 }
-@media(prefers-reduced-motion:reduce) { .settings-modal { animation: none; } }
 .settings-title {
   display: flex;
   align-items: center;
@@ -1881,5 +1881,5 @@ input::placeholder, textarea::placeholder, .field input::placeholder { color: va
   --range-halo: color-mix(in srgb, var(--focus) 40%, transparent);
 }
 @media (prefers-reduced-motion:no-preference) {
-  .modal, .site-context-menu, .category-context-menu, .theme-choice, .ztab-select-popup { transition: background-color .15s, color .15s, border-color .15s; }
+  .modal:not(.animated-overlay-panel), .site-context-menu, .category-context-menu, .theme-choice, .ztab-select-popup { transition: background-color .15s, color .15s, border-color .15s; }
 }

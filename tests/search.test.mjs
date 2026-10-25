@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import ts from 'typescript';
+import vm from 'node:vm';
 const load = async name => {
   const source = await readFile(new URL(`../src/${name}.ts`, import.meta.url), 'utf8');
   const code = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 } }).outputText;
@@ -47,6 +48,41 @@ test('history preference migrates and survives backup but independent words neve
   const term = '中文 &?#/';
   assert.ok(safeUrl(`https://example.com/?q=${encodeURIComponent(term)}`).includes(encodeURIComponent(term)));
 });
+test('site candidates honor each icon opening preference for mouse and keyboard while searches stay independent', async () => {
+  const source = await readFile(new URL('../src/components/SearchBar.tsx', import.meta.url), 'utf8');
+  const code = ts.transpileModule(source.replace(/^import .*$/gm, ''), { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.React } }).outputText;
+  const nodes = tree => [tree, ...tree.children.filter(node => node && typeof node === 'object').flatMap(nodes)];
+  for (const global of [true, false]) for (const newTab of [undefined, true, false]) {
+    const navigations = [], errors = [], mod = { exports: {} };
+    const state = defaults();
+    state.settings.siteNewTab = global;
+    state.settings.searchNewTab = !global;
+    state.settings.searchHistoryEnabled = false;
+    const values = ['GitHub', true, 0, []];
+    let hook = 0;
+    vm.runInNewContext(code, {
+      exports: mod.exports,
+      React: { createElement: (type, props, ...children) => ({ type, props: props ?? {}, children: children.flat(Infinity) }) },
+      useState: () => [values[hook++], () => {}], useRef: value => ({ current: value }), useId: () => 'search', useEffect() {},
+      matchSites: () => [{ item: { id: 'site', title: 'GitHub', url: 'https://example.com/', newTab }, path: '日常' }],
+      safeUrl, URL, Select: 'Select', SiteIcon: 'SiteIcon', SearchHistoryControls: 'SearchHistoryControls', Search: 'svg', X: 'svg',
+      window: { open: (...args) => navigations.push({ newTab: true, args }), location: { assign: url => navigations.push({ newTab: false, url }) } },
+    });
+    const tree = mod.exports.SearchBar({ state, tell: error => errors.push(error) });
+    nodes(tree).find(node => node.props.role === 'option').props.onClick();
+    const input = nodes(tree).find(node => node.type === 'input');
+    input.props.onKeyDown({ key: 'Enter', nativeEvent: {}, preventDefault() {} });
+    assert.equal(navigations.length, 2);
+    for (const result of navigations) {
+      assert.equal(result.newTab, newTab ?? global);
+      if (result.newTab) assert.equal(result.args[2], 'noopener,noreferrer');
+    }
+    tree.props.onSubmit({ preventDefault() {} });
+    assert.equal(navigations[2].newTab, !global);
+    assert.deepEqual(errors, []);
+  }
+});
+
 test('search input focus stays borderless without disabling other control focus indicators', async () => {
   const css = await readFile(new URL('../src/components/search-bar.css', import.meta.url), 'utf8');
   const globalCss = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');
